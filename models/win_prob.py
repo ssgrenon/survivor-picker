@@ -19,10 +19,17 @@ for that game and logs the fallback so it's visible during backtesting.
 
 Whenever `elo_games` is supplied, `get_win_probability` also reports each
 model's implied point spread (`market_spread`/`elo_spread`, both on the
-same spread-point scale via the calibrated logistic model) and their
-absolute difference (`divergence`) -- a display/awareness signal only,
-computed independently of `market_weight` and never used to alter the
-blended probability itself.
+same spread-point scale via the calibrated logistic model, and both
+always expressed in the home team's spread convention -- positive means
+the home team is favored -- regardless of which team's win probability
+was requested) and their signed difference (`divergence` = elo_spread -
+market_spread: positive when nfelo rates the home team more favorably
+than the market, negative when less favorably). Because both spreads use
+the fixed home-team convention rather than the requested team's
+perspective, the same game always produces the same `divergence` no
+matter which team is being evaluated. `divergence` is a display/
+awareness signal only, computed independently of `market_weight` and
+never used to alter the blended probability itself.
 """
 
 from __future__ import annotations
@@ -197,38 +204,34 @@ def _market_home_win_probability(
     return spread_to_home_win_probability(float(spread_line), model=spread_model)
 
 
-def _team_perspective(home_value: float, team: str, home_team: str) -> float:
-    """Flip a home-perspective value (positive = favors home) to `team`'s perspective."""
-    return home_value if team == home_team else -home_value
-
-
-def _market_spread(
+def _home_market_spread(
     game_row: Mapping[str, Any],
     home_market_prob: float,
-    team: str,
-    home_team: str,
     spread_model: Optional[SpreadModel],
 ) -> float:
-    """`team`'s market-implied point spread: the game's actual posted spread_line when
-    available (it's already in spread-point units), else the market probability's
-    logistic-equivalent spread.
+    """The market-implied point spread, in the home team's convention (positive = home
+    favored): the game's actual posted spread_line when available (it's already in
+    spread-point units), else the market probability's logistic-equivalent spread.
     """
     spread_line = game_row.get("spread_line")
     if spread_line is not None and not pd.isna(spread_line):
-        home_spread = float(spread_line)
-    else:
-        home_spread = home_win_probability_to_spread_line(home_market_prob, spread_model)
-    return _team_perspective(home_spread, team, home_team)
+        return float(spread_line)
+    return home_win_probability_to_spread_line(home_market_prob, spread_model)
 
 
 @dataclass(frozen=True)
 class WinProbabilityResult:
     """Result of `get_win_probability`: the blended probability plus model-divergence context.
 
-    `market_spread` is always populated. `elo_spread`/`divergence` are None
-    whenever `elo_games` wasn't supplied, or nfelo has no rating for this
-    particular game -- `divergence` is a display/awareness signal only,
-    computed independently of `market_weight`, never a scoring input.
+    `market_spread`/`elo_spread` are always in the home team's spread
+    convention (positive = home favored), regardless of which team's win
+    probability was requested -- so `divergence` (= elo_spread -
+    market_spread) is identical for the same game no matter which team is
+    being evaluated. `market_spread` is always populated. `elo_spread`/
+    `divergence` are None whenever `elo_games` wasn't supplied, or nfelo
+    has no rating for this particular game -- `divergence` is a display/
+    awareness signal only, computed independently of `market_weight`,
+    never a scoring input.
     """
 
     win_probability: float
@@ -287,7 +290,7 @@ def get_win_probability(
 
     home_market_prob = _market_home_win_probability(game_row, spread_model)
     market_prob = home_market_prob if team == home_team else 1.0 - home_market_prob
-    market_spread = _market_spread(game_row, home_market_prob, team, home_team, spread_model)
+    market_spread = _home_market_spread(game_row, home_market_prob, spread_model)
 
     win_probability = market_prob
     elo_spread = None
@@ -308,10 +311,10 @@ def get_win_probability(
             )
         else:
             home_elo_prob = elo_prob if team == home_team else 1.0 - elo_prob
-            elo_spread = _team_perspective(
-                home_win_probability_to_spread_line(home_elo_prob, spread_model), team, home_team
-            )
-            divergence = abs(market_spread - elo_spread)
+            elo_spread = home_win_probability_to_spread_line(home_elo_prob, spread_model)
+            # Signed and home-team-relative (not team-relative), so the same game always
+            # produces the same divergence regardless of which team is being evaluated.
+            divergence = elo_spread - market_spread
             if market_weight < 1.0:
                 win_probability = market_weight * market_prob + (1.0 - market_weight) * elo_prob
     elif market_weight < 1.0:

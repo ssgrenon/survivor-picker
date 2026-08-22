@@ -76,27 +76,31 @@ def _matchup_display(team: str, opponent: str, is_home: bool, bold_team: bool = 
     return f"{away}@{home}"
 
 
-# Model-divergence coloring thresholds (point-spread units, see
-# models.win_prob.WinProbabilityResult.divergence): >=3 is a meaningful
-# market/Elo disagreement (red), >1 and <3 is worth a second look (amber),
-# <=1 is unremarkable (default text color).
+# Model-divergence coloring thresholds, based on the *absolute value* of
+# the signed divergence (point-spread units, see
+# models.win_prob.WinProbabilityResult.divergence -- positive means nfelo
+# rates the home team more favorably than the market, negative means less
+# favorably): |divergence| >= 3 is a meaningful market/Elo disagreement
+# (red), 1 <= |divergence| < 3 is worth a second look (amber), otherwise
+# unremarkable (default text color).
 _DIVERGENCE_RED = "#cf222e"
 _DIVERGENCE_AMBER = "#9a6700"
 
 
 def _divergence_color_hex(divergence: Optional[float]) -> Optional[str]:
-    """Hex color for a divergence value, or None for the default/unstyled case."""
+    """Hex color for a (signed) divergence value, or None for the default/unstyled case."""
     if divergence is None or (isinstance(divergence, float) and pd.isna(divergence)):
         return None
-    if divergence >= 3:
+    magnitude = abs(divergence)
+    if magnitude >= 3:
         return _DIVERGENCE_RED
-    if divergence > 1:
+    if magnitude >= 1:
         return _DIVERGENCE_AMBER
     return None
 
 
 def _divergence_badge(divergence: Optional[float]) -> str:
-    """Inline-styled HTML span showing a divergence value, colored per `_divergence_color_hex`.
+    """Inline-styled HTML span showing a signed divergence value, colored per `_divergence_color_hex`.
 
     Returns "" when divergence is unavailable (no elo data for this game),
     so callers can safely splice this into an f-string unconditionally.
@@ -106,7 +110,7 @@ def _divergence_badge(divergence: Optional[float]) -> str:
         return ""
     color = _divergence_color_hex(divergence)
     style = f"color: {color}; font-weight: 600;" if color else ""
-    return f' <span style="{style}">(model divergence {divergence:.1f})</span>'
+    return f' <span style="{style}">(model divergence {divergence:+.1f})</span>'
 
 
 @st.cache_data(show_spinner=False)
@@ -352,7 +356,7 @@ def _style_log_table(df: pd.DataFrame):
         return "color: #9a6700; font-weight: 600;" if value == "Override" else ""
 
     def _fmt_divergence(v):
-        return f"{v:.1f}" if isinstance(v, (int, float)) and pd.notna(v) else "—"
+        return f"{v:+.1f}" if isinstance(v, (int, float)) and pd.notna(v) else "—"
 
     def _color_divergence(value):
         if not isinstance(value, (int, float)) or pd.isna(value):

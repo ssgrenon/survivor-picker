@@ -197,7 +197,10 @@ def test_simulate_threads_market_weight_to_available_candidates():
 
 
 def test_simulate_carries_model_divergence_into_week_records():
-    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320)])
+    # spread=None forces market_spread to derive from the -400 moneyline
+    # (a big home favorite) rather than a posted spread_line, so it's
+    # directly comparable to nfelo's much less confident 60% home rating.
+    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320, spread=None)])
     schedule["game_id"] = ["2099_01_DEN_KC"]
     elo_games = pd.DataFrame(
         [
@@ -214,7 +217,10 @@ def test_simulate_carries_model_divergence_into_week_records():
 
     with_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0, elo_games=elo_games)
     assert with_elo.records[0].model_divergence is not None
-    assert with_elo.records[0].model_divergence > 0
+    # Market favors KC (home) far more heavily (-400) than nfelo does (60%),
+    # so nfelo's home-team spread is smaller than the market's -- negative
+    # under the signed (elo_spread - market_spread) convention.
+    assert with_elo.records[0].model_divergence < 0
 
 
 def test_make_entry_a_algorithm_threads_market_weight():
