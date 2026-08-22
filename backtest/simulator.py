@@ -22,7 +22,7 @@ from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, 
 import pandas as pd
 
 from data import nflverse_client
-from models import future_value
+from models import dp_optimizer
 from models import win_prob as wp
 from strategy import entry_a_value
 from strategy import entry_b_hedge
@@ -235,12 +235,12 @@ def highest_win_probability_algorithm(
 
 def make_entry_a_algorithm(
     schedule: Optional[pd.DataFrame] = None,
-    lookahead_weeks: int = future_value.DEFAULT_LOOKAHEAD_WEEKS,
-    decay_rate: float = future_value.DEFAULT_DECAY_RATE,
-    penalty_weight: float = entry_a_value.DEFAULT_PENALTY_WEIGHT,
+    lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
+    per_week_top_k: int = dp_optimizer.DEFAULT_PER_WEEK_TOP_K,
+    max_candidate_teams: int = dp_optimizer.DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
 ) -> PickAlgorithm:
-    """Build an algorithm replicating Entry A's win-prob-minus-hold-penalty strategy."""
+    """Build an algorithm replicating Entry A's DP-optimized strategy."""
 
     def _pick(
         season: int,
@@ -249,18 +249,16 @@ def make_entry_a_algorithm(
         available: Sequence[entry_b_hedge.TeamCandidate],
     ) -> str:
         sched = schedule if schedule is not None else nflverse_client.load_games(season=season)
-        candidates = entry_a_value.build_candidates(
+        return entry_a_value.recommend_pick(
             season,
             week,
-            used_teams,
+            used_teams=used_teams,
             schedule=sched,
             lookahead_weeks=lookahead_weeks,
-            decay_rate=decay_rate,
+            per_week_top_k=per_week_top_k,
+            max_candidate_teams=max_candidate_teams,
             spread_model=spread_model,
-        )
-        if not candidates:
-            raise ValueError(f"No available teams for season {season} week {week}")
-        return entry_a_value.rank_picks(candidates, penalty_weight=penalty_weight)[0].team
+        ).team
 
     return _pick
 

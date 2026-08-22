@@ -1,16 +1,14 @@
 """Weekly pick strategy for Entry A.
 
-Ranks this week's available (not-yet-used) teams by a value score that
-rewards a high win probability but discounts teams that have a
-materially better matchup coming up soon, per `models.future_value`:
-
-    score = win_probability * (1 - future_value_penalty)
-
-where `future_value_penalty` is the team's (clipped, non-negative)
-`future_value` score -- 0 when there's nothing better ahead, up to 1 when
-holding the team would be clearly better than using them now. The top
-score is returned as the recommended pick, along with plain-language
-reasoning referencing win probability, spread, and the runner-up.
+Recommends this week's pick by running an N-week dynamic-programming
+optimizer (`models.dp_optimizer`) over the current used-teams state: it
+finds the sequence of distinct teams across the lookahead window that
+maximizes the *product* of win probabilities -- i.e. the probability of
+surviving the whole window -- and this week's pick is simply the first
+step of that optimal sequence. The full projected path comes along for
+display (e.g. in the UI), and the reasoning explains whether -- and
+why -- the optimizer is holding back the single best team available
+this week in favor of a stronger matchup later on.
 """
 
 from __future__ import annotations
@@ -22,40 +20,17 @@ from typing import Iterable, List, Optional, Sequence, Set
 
 import pandas as pd
 
-from data import nflverse_client
-from models import future_value
+from models import dp_optimizer
 from models import win_prob as wp
+from strategy import entry_b_hedge
 
 ENTRY_NAME = "A"
 DEFAULT_STATE_PATH = Path(__file__).resolve().parent.parent / "state" / "used_teams_a.json"
-DEFAULT_PENALTY_WEIGHT = 1.0
 
-
-@dataclass(frozen=True)
-class TeamCandidate:
-    """One available team's matchup for the week under consideration."""
-
-    team: str
-    opponent: str
-    is_home: bool
-    win_probability: float
-    future_value: float
-    spread_line: Optional[float]
-
-    @property
-    def team_spread(self) -> Optional[float]:
-        """Points `team` is favored by (negative means `team` is the underdog)."""
-        if self.spread_line is None:
-            return None
-        return self.spread_line if self.is_home else -self.spread_line
-
-
-@dataclass(frozen=True)
-class RankedPick(TeamCandidate):
-    """A candidate plus its computed hold penalty and final ranking score."""
-
-    future_value_penalty: float = 0.0
-    score: float = 0.0
+# Entry A's candidate pool is just win-probability/matchup info, identical
+# in shape to Entry B's -- the DP optimizer (not a per-candidate score) is
+# what decides the hold-vs-spend tradeoff now.
+TeamCandidate = entry_b_hedge.TeamCandidate
 
 
 @dataclass(frozen=True)
@@ -65,9 +40,10 @@ class PickRecommendation:
     team: str
     win_probability: float
     spread_line: Optional[float]
-    score: float
     reasoning: str
-    ranked_picks: Sequence[RankedPick]
+    survival_probability: float
+    projected_path: Sequence[dp_optimizer.WeekPick]
+    available: Sequence[TeamCandidate]
 
 
 def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
@@ -77,50 +53,25 @@ def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
     return set(state.get("used_teams", {}).values())
 
 
-def future_value_penalty(raw_future_value: float, penalty_weight: float = DEFAULT_PENALTY_WEIGHT) -> float:
-    """Convert a raw `future_value` score into a [0, 1] penalty fraction.
-
-    Only a *positive* future_value (a materially better matchup coming up)
-    penalizes a team's current-week score; future_value <= 0 (nothing
-    better ahead) gets a 0 penalty.
-    """
-    return min(1.0, max(0.0, raw_future_value) * penalty_weight)
-
-
-def rank_picks(
-    candidates: Sequence[TeamCandidate], penalty_weight: float = DEFAULT_PENALTY_WEIGHT
-) -> List[RankedPick]:
-    """Score and sort candidates best-first by win_probability * (1 - penalty)."""
-    if not candidates:
-        raise ValueError("no candidates to rank")
-
-    ranked = []
-    for c in candidates:
-        penalty = future_value_penalty(c.future_value, penalty_weight)
-        score = c.win_probability * (1 - penalty)
-        ranked.append(
-            RankedPick(
-                team=c.team,
-                opponent=c.opponent,
-                is_home=c.is_home,
-                win_probability=c.win_probability,
-                future_value=c.future_value,
-                spread_line=c.spread_line,
-                future_value_penalty=penalty,
-                score=score,
-            )
-        )
-    ranked.sort(key=lambda p: p.score, reverse=True)
-    return ranked
+def build_candidates(
+    season: int,
+    week: int,
+    used_teams: Iterable[str],
+    schedule: Optional[pd.DataFrame] = None,
+    spread_model: Optional[wp.SpreadModel] = None,
+) -> List[TeamCandidate]:
+    """Every available (not-yet-used) team's matchup/win-probability for `week`."""
+    return entry_b_hedge.build_candidates(season, week, used_teams, schedule=schedule, spread_model=spread_model)
 
 
 def _format_pct(p: float) -> str:
     return f"{p * 100:.1f}%"
 
 
-def _format_team_spread(team_spread: Optional[float]) -> str:
-    if team_spread is None:
+def _format_team_spread(spread_line: Optional[float], is_home: bool) -> str:
+    if spread_line is None:
         return "spread unavailable"
+    team_spread = spread_line if is_home else -spread_line
     if team_spread > 0:
         return f"favored by {team_spread:g}"
     if team_spread < 0:
@@ -128,94 +79,50 @@ def _format_team_spread(team_spread: Optional[float]) -> str:
     return "a pick'em"
 
 
-def build_reasoning(top: RankedPick, runner_up: Optional[RankedPick]) -> str:
-    """Plain-language explanation of the top pick: win prob, spread, why it wins out."""
+def build_reasoning(
+    result: dp_optimizer.OptimizedSequence,
+    greedy_best: Optional[TeamCandidate],
+) -> str:
+    """Plain-language explanation: win prob/spread for this week's pick, and why
+    the optimizer picked it over the single best team available now (if
+    different), referencing the projected path.
+    """
+    top = result.path[0]
+    window = len(result.path)
     parts = [
         f"{top.team} vs {top.opponent} ({'home' if top.is_home else 'away'}): "
-        f"{_format_pct(top.win_probability)} win probability, {_format_team_spread(top.team_spread)}."
+        f"{_format_pct(top.win_probability)} win probability, "
+        f"{_format_team_spread(top.spread_line, top.is_home)}."
     ]
 
-    if top.future_value_penalty > 0:
-        parts.append(
-            f"A hold penalty of {top.future_value_penalty:.2f} was applied "
-            f"(future_value={top.future_value:+.3f}, meaning a stronger matchup is on the "
-            f"horizon), but {top.team} still ranks best this week."
-        )
+    if greedy_best is not None and greedy_best.team != top.team:
+        held_week = next((p.week for p in result.path[1:] if p.team == greedy_best.team), None)
+        if held_week is not None:
+            held_prob = next(p.win_probability for p in result.path if p.team == greedy_best.team)
+            parts.append(
+                f"{greedy_best.team} is actually this week's single best option "
+                f"({_format_pct(greedy_best.win_probability)}), but the {window}-week optimizer holds "
+                f"them for Week {held_week} ({_format_pct(held_prob)} there) since that raises the "
+                f"overall {window}-week survival odds to {_format_pct(result.survival_probability)}."
+            )
+        else:
+            parts.append(
+                f"{greedy_best.team} is actually this week's single best option "
+                f"({_format_pct(greedy_best.win_probability)}), but the {window}-week optimizer favors "
+                f"{top.team} instead to raise the overall survival odds across the window to "
+                f"{_format_pct(result.survival_probability)}."
+            )
     else:
         parts.append(
-            f"No better matchup is on the horizon for {top.team}, so no hold penalty applies."
+            f"Also the single best option available this week; the {window}-week projected "
+            f"survival probability along this path is {_format_pct(result.survival_probability)}."
         )
 
-    if runner_up is not None:
-        margin = top.score - runner_up.score
-        parts.append(
-            f"Beats the next-best option, {runner_up.team} "
-            f"({_format_pct(runner_up.win_probability)} win prob, score {runner_up.score:.3f}), "
-            f"by {margin:.3f} points of adjusted score."
-        )
-    else:
-        parts.append("It is the only available team with a game this week.")
+    if window > 1:
+        rest = ", ".join(f"Wk{p.week} {p.team} ({_format_pct(p.win_probability)})" for p in result.path[1:])
+        parts.append(f"Projected path after this week: {rest}.")
 
     return " ".join(parts)
-
-
-def build_candidates(
-    season: int,
-    week: int,
-    used_teams: Iterable[str],
-    schedule: Optional[pd.DataFrame] = None,
-    lookahead_weeks: int = future_value.DEFAULT_LOOKAHEAD_WEEKS,
-    decay_rate: float = future_value.DEFAULT_DECAY_RATE,
-    spread_model: Optional[wp.SpreadModel] = None,
-) -> List[TeamCandidate]:
-    """Build the list of available (not-yet-used) teams' candidates for `week`.
-
-    Teams whose game has neither moneylines nor a spread_line yet (too far
-    out for odds to be posted) are skipped -- there's nothing to rank them
-    by until a line exists.
-    """
-    if schedule is None:
-        schedule = nflverse_client.load_games(season=season)
-
-    used = set(used_teams)
-    week_games = schedule[schedule["week"] == week]
-    if week_games.empty:
-        raise ValueError(f"No games found for season {season} week {week}")
-
-    candidates = []
-    for _, row in week_games.iterrows():
-        for team, opponent, is_home in (
-            (row["home_team"], row["away_team"], True),
-            (row["away_team"], row["home_team"], False),
-        ):
-            if team in used:
-                continue
-            try:
-                win_probability = wp.get_win_probability(row, team, spread_model=spread_model)
-            except ValueError:
-                continue  # no odds posted yet for this game -- nothing to rank it by
-            remaining = future_value.load_remaining_schedule(team, season, week, schedule=schedule)
-            fv_score = future_value.get_future_value(
-                team,
-                remaining,
-                week,
-                lookahead_weeks=lookahead_weeks,
-                decay_rate=decay_rate,
-                spread_model=spread_model,
-            )
-            spread_line = row.get("spread_line")
-            candidates.append(
-                TeamCandidate(
-                    team=team,
-                    opponent=opponent,
-                    is_home=is_home,
-                    win_probability=win_probability,
-                    future_value=fv_score,
-                    spread_line=(float(spread_line) if pd.notna(spread_line) else None),
-                )
-            )
-
-    return candidates
 
 
 def recommend_pick(
@@ -224,47 +131,48 @@ def recommend_pick(
     used_teams: Optional[Iterable[str]] = None,
     schedule: Optional[pd.DataFrame] = None,
     state_path: Path = DEFAULT_STATE_PATH,
-    lookahead_weeks: int = future_value.DEFAULT_LOOKAHEAD_WEEKS,
-    decay_rate: float = future_value.DEFAULT_DECAY_RATE,
-    penalty_weight: float = DEFAULT_PENALTY_WEIGHT,
+    lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
+    per_week_top_k: int = dp_optimizer.DEFAULT_PER_WEEK_TOP_K,
+    max_candidate_teams: int = dp_optimizer.DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
 ) -> PickRecommendation:
-    """Recommend Entry A's best pick for `season`/`week`.
+    """Recommend Entry A's best pick for `season`/`week` via the DP optimizer.
 
     Args:
         used_teams: Teams already spent by Entry A. Loaded from
             `state_path` (Entry A's state file) if omitted.
         schedule: Optional pre-loaded full-season schedule, to avoid
             re-downloading across repeated calls.
+        lookahead_weeks / per_week_top_k / max_candidate_teams: Passed
+            straight through to `dp_optimizer.optimize_pick_sequence`.
     """
     if used_teams is None:
         used_teams = load_used_teams(state_path)
+    used_teams = set(used_teams)
 
-    candidates = build_candidates(
+    result = dp_optimizer.optimize_pick_sequence(
         season,
         week,
         used_teams,
         schedule=schedule,
         lookahead_weeks=lookahead_weeks,
-        decay_rate=decay_rate,
+        per_week_top_k=per_week_top_k,
+        max_candidate_teams=max_candidate_teams,
         spread_model=spread_model,
     )
-    if not candidates:
-        raise ValueError(
-            f"No available (unused) teams have games in season {season} week {week}"
-        )
 
-    ranked = rank_picks(candidates, penalty_weight=penalty_weight)
-    top = ranked[0]
-    runner_up = ranked[1] if len(ranked) > 1 else None
+    available = build_candidates(season, week, used_teams, schedule=schedule, spread_model=spread_model)
+    greedy_best = max(available, key=lambda c: c.win_probability) if available else None
 
+    top = result.path[0]
     return PickRecommendation(
         week=week,
         entry=ENTRY_NAME,
         team=top.team,
         win_probability=top.win_probability,
         spread_line=top.spread_line,
-        score=top.score,
-        reasoning=build_reasoning(top, runner_up),
-        ranked_picks=ranked,
+        reasoning=build_reasoning(result, greedy_best),
+        survival_probability=result.survival_probability,
+        projected_path=result.path,
+        available=available,
     )
