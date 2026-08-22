@@ -56,6 +56,7 @@ class WeekPick:
     is_home: bool
     win_probability: float
     spread_line: Optional[float]
+    divergence: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,8 @@ def _week_candidates(
     excluded_teams: Set[str],
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> List[WeekPick]:
     """Every not-excluded team with a usable win probability for `week`, best-first."""
     week_games = schedule[schedule["week"] == week]
@@ -91,7 +94,9 @@ def _week_candidates(
             if team in excluded_teams:
                 continue
             try:
-                win_probability = wp.get_win_probability(row, team, spread_model=spread_model)
+                result = wp.get_win_probability(
+                    row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games
+                )
             except ValueError:
                 continue  # no odds posted yet for this game
             spread_line = row.get("spread_line")
@@ -101,8 +106,9 @@ def _week_candidates(
                     team=team,
                     opponent=opponent,
                     is_home=is_home,
-                    win_probability=win_probability,
+                    win_probability=result.win_probability,
                     spread_line=(float(spread_line) if pd.notna(spread_line) else None),
+                    divergence=result.divergence,
                 )
             )
     picks.sort(key=lambda p: p.win_probability, reverse=True)
@@ -191,6 +197,8 @@ def optimize_pick_sequence(
     per_week_top_k: int = DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> OptimizedSequence:
     """Find the optimal pick sequence starting at `current_week`.
 
@@ -203,6 +211,7 @@ def optimize_pick_sequence(
             `current_week` itself.
         per_week_top_k / max_candidate_teams: Pruning knobs -- see
             `build_candidate_universe`.
+        market_weight / elo_games: see `models.win_prob.get_win_probability`.
 
     Returns:
         An `OptimizedSequence` whose `path` covers `current_week` through
@@ -222,7 +231,12 @@ def optimize_pick_sequence(
     if not weeks:
         raise ValueError(f"No weeks remain from week {current_week} in season {season}")
 
-    weekly_options = {week: _week_candidates(season, week, excluded, schedule, spread_model) for week in weeks}
+    weekly_options = {
+        week: _week_candidates(
+            season, week, excluded, schedule, spread_model, market_weight=market_weight, elo_games=elo_games
+        )
+        for week in weeks
+    }
     weekly_options = {week: options for week, options in weekly_options.items() if options}
     if not weekly_options:
         raise ValueError(

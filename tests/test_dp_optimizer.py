@@ -174,3 +174,41 @@ def test_optimize_pick_sequence_raises_when_nothing_available():
         dpo.optimize_pick_sequence(
             SEASON, 1, used_teams=all_teams, schedule=schedule, lookahead_weeks=2
         )
+
+
+def test_optimize_pick_sequence_threads_market_weight_to_change_the_plan():
+    # With pure market probabilities, week 1's optimal pick is Y (holding X
+    # for its stronger week-2 matchup, see test_optimize_pick_sequence_holds_
+    # team_end_to_end above). If nfelo instead rates X as only a coinflip
+    # both weeks and Y as a near-lock this week, a 0%-market/100%-elo blend
+    # should flip week 1's pick to Y for a *different* reason: because X is
+    # no longer worth holding at all under Elo's numbers.
+    schedule = _holding_schedule()
+    schedule["game_id"] = ["2099_01_AAA_X", "2099_01_BBB_Y", "2099_02_CCC_X", "2099_02_DDD_Z"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2099_01_AAA_X", "season": SEASON, "week": 1, "team": "X", "opponent": "AAA",
+             "is_home": True, "elo_win_probability": 0.50},
+            {"game_id": "2099_01_AAA_X", "season": SEASON, "week": 1, "team": "AAA", "opponent": "X",
+             "is_home": False, "elo_win_probability": 0.50},
+            {"game_id": "2099_01_BBB_Y", "season": SEASON, "week": 1, "team": "Y", "opponent": "BBB",
+             "is_home": True, "elo_win_probability": 0.97},
+            {"game_id": "2099_01_BBB_Y", "season": SEASON, "week": 1, "team": "BBB", "opponent": "Y",
+             "is_home": False, "elo_win_probability": 0.03},
+            {"game_id": "2099_02_CCC_X", "season": SEASON, "week": 2, "team": "X", "opponent": "CCC",
+             "is_home": True, "elo_win_probability": 0.50},
+            {"game_id": "2099_02_CCC_X", "season": SEASON, "week": 2, "team": "CCC", "opponent": "X",
+             "is_home": False, "elo_win_probability": 0.50},
+            {"game_id": "2099_02_DDD_Z", "season": SEASON, "week": 2, "team": "Z", "opponent": "DDD",
+             "is_home": True, "elo_win_probability": 0.55},
+            {"game_id": "2099_02_DDD_Z", "season": SEASON, "week": 2, "team": "DDD", "opponent": "Z",
+             "is_home": False, "elo_win_probability": 0.45},
+        ]
+    )
+
+    result = dpo.optimize_pick_sequence(
+        SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=2,
+        market_weight=0.0, elo_games=elo_games,
+    )
+    assert result.recommended_pick == "Y"
+    assert [p.team for p in result.path] == ["Y", "Z"]

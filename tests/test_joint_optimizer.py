@@ -116,3 +116,22 @@ def test_recommend_joint_pick_respects_used_teams_per_entry():
         2026, 5, used_teams_a={"KC"}, used_teams_b=set(), schedule=schedule
     )
     assert rec.pick_a != "KC"
+
+
+def test_recommend_joint_pick_threads_market_weight():
+    schedule = _week_schedule()
+    schedule["game_id"] = ["2026_05_DEN_KC", "2026_05_SEA_SF", "2026_05_NYJ_BUF"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2026_05_DEN_KC", "season": 2026, "week": 5, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.99},
+            {"game_id": "2026_05_DEN_KC", "season": 2026, "week": 5, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.01},
+        ]
+    )
+    rec = jo.recommend_joint_pick(
+        2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule,
+        market_weight=0.0, elo_games=elo_games,
+    )
+    kc_prob = rec.win_probability_a if rec.pick_a == "KC" else rec.win_probability_b
+    assert kc_prob == pytest.approx(0.99)

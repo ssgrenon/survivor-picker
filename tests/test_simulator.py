@@ -169,6 +169,83 @@ def test_make_entry_a_algorithm_returns_available_team():
     assert pick in {c.team for c in available}
 
 
+def test_simulate_threads_market_weight_to_available_candidates():
+    # KC is a heavy market favorite here (-400); with market_weight=0.0 and
+    # an elo table that instead rates KC as a near-lock loser, the win
+    # probability `simulate` hands the algorithm for KC should reflect elo,
+    # not the market line -- proving the parameter reaches build_candidates
+    # inside `simulate` itself.
+    schedule = _schedule([_row(1, "KC", "DEN", home_ml=-400, away_ml=320)])
+    schedule["game_id"] = ["2099_01_DEN_KC"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.10},
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.90},
+        ]
+    )
+
+    seen = {}
+
+    def _spy_algorithm(season, week, used_teams, available):
+        seen["kc_prob"] = next(c.win_probability for c in available if c.team == "KC")
+        return "KC"
+
+    sim.simulate(SEASON, 1, _spy_algorithm, schedule=schedule, market_weight=0.0, elo_games=elo_games)
+    assert seen["kc_prob"] == pytest.approx(0.10)
+
+
+def test_simulate_carries_model_divergence_into_week_records():
+    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320)])
+    schedule["game_id"] = ["2099_01_DEN_KC"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.60},
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.40},
+        ]
+    )
+    algorithm = _scripted_algorithm({1: "KC"})
+
+    without_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
+    assert without_elo.records[0].model_divergence is None
+
+    with_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0, elo_games=elo_games)
+    assert with_elo.records[0].model_divergence is not None
+    assert with_elo.records[0].model_divergence > 0
+
+
+def test_make_entry_a_algorithm_threads_market_weight():
+    schedule = _schedule(
+        [
+            _row(1, "KC", "DEN", home_ml=-400, away_ml=320),
+            _row(1, "SF", "SEA", home_ml=-150, away_ml=130),
+        ]
+    )
+    schedule["game_id"] = ["2099_01_DEN_KC", "2099_01_SEA_SF"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.20},
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.80},
+            {"game_id": "2099_01_SEA_SF", "season": SEASON, "week": 1, "team": "SF", "opponent": "SEA",
+             "is_home": True, "elo_win_probability": 0.95},
+            {"game_id": "2099_01_SEA_SF", "season": SEASON, "week": 1, "team": "SEA", "opponent": "SF",
+             "is_home": False, "elo_win_probability": 0.05},
+        ]
+    )
+    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule)
+
+    market_algorithm = sim.make_entry_a_algorithm(schedule=schedule)
+    assert market_algorithm(SEASON, 1, set(), available) == "KC"
+
+    blended_algorithm = sim.make_entry_a_algorithm(schedule=schedule, market_weight=0.0, elo_games=elo_games)
+    assert blended_algorithm(SEASON, 1, set(), available) == "SF"
+
+
 def test_compare_algorithms_runs_each_and_keys_by_name():
     schedule = _schedule([_row(1, "KC", "DEN", 30, 10)])
     results = sim.compare_algorithms(

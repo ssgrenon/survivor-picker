@@ -44,6 +44,7 @@ class PickRecommendation:
     survival_probability: float
     projected_path: Sequence[dp_optimizer.WeekPick]
     available: Sequence[TeamCandidate]
+    divergence: Optional[float] = None
 
 
 def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
@@ -59,9 +60,19 @@ def build_candidates(
     used_teams: Iterable[str],
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> List[TeamCandidate]:
     """Every available (not-yet-used) team's matchup/win-probability for `week`."""
-    return entry_b_hedge.build_candidates(season, week, used_teams, schedule=schedule, spread_model=spread_model)
+    return entry_b_hedge.build_candidates(
+        season,
+        week,
+        used_teams,
+        schedule=schedule,
+        spread_model=spread_model,
+        market_weight=market_weight,
+        elo_games=elo_games,
+    )
 
 
 def _format_pct(p: float) -> str:
@@ -135,6 +146,8 @@ def recommend_pick(
     per_week_top_k: int = dp_optimizer.DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = dp_optimizer.DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> PickRecommendation:
     """Recommend Entry A's best pick for `season`/`week` via the DP optimizer.
 
@@ -145,6 +158,7 @@ def recommend_pick(
             re-downloading across repeated calls.
         lookahead_weeks / per_week_top_k / max_candidate_teams: Passed
             straight through to `dp_optimizer.optimize_pick_sequence`.
+        market_weight / elo_games: see `models.win_prob.get_win_probability`.
     """
     if used_teams is None:
         used_teams = load_used_teams(state_path)
@@ -159,9 +173,14 @@ def recommend_pick(
         per_week_top_k=per_week_top_k,
         max_candidate_teams=max_candidate_teams,
         spread_model=spread_model,
+        market_weight=market_weight,
+        elo_games=elo_games,
     )
 
-    available = build_candidates(season, week, used_teams, schedule=schedule, spread_model=spread_model)
+    available = build_candidates(
+        season, week, used_teams, schedule=schedule, spread_model=spread_model,
+        market_weight=market_weight, elo_games=elo_games,
+    )
     greedy_best = max(available, key=lambda c: c.win_probability) if available else None
 
     top = result.path[0]
@@ -175,4 +194,5 @@ def recommend_pick(
         survival_probability=result.survival_probability,
         projected_path=result.path,
         available=available,
+        divergence=top.divergence,
     )
