@@ -333,11 +333,31 @@ def main() -> None:
                 "Entry B", "B", eliminated_b, rec_b, f"pick_b_{season}_{current_week}_{selected_a}"
             )
 
-        if not eliminated_a and not eliminated_b:
-            with st.expander("Top picks (draft order): Entry A's picks, then Entry B's, all distinct"):
+        if not (eliminated_a and eliminated_b):
+            # Once one entry is eliminated, both algorithms keep drafting from the
+            # *surviving* entry's remaining teams -- still four distinct candidate
+            # picks (two per algorithm), just no longer split across two separate
+            # used-teams histories.
+            if eliminated_a:
+                draft_used_a, draft_used_b = used_b, used_b
+                expander_note = " (both algorithms drafting from Entry B's remaining teams)"
+            elif eliminated_b:
+                draft_used_a, draft_used_b = used_a, used_a
+                expander_note = " (both algorithms drafting from Entry A's remaining teams)"
+            else:
+                draft_used_a, draft_used_b = used_a, used_b
+                expander_note = ""
+
+            with st.expander(f"Top picks (draft order): Entry A's picks, then Entry B's, all distinct{expander_note}"):
                 try:
                     draft = draft_order.draft_picks(
-                        season, current_week, used_a, used_b, rounds=2, schedule=schedule, spread_model=spread_model
+                        season,
+                        current_week,
+                        draft_used_a,
+                        draft_used_b,
+                        rounds=2,
+                        schedule=schedule,
+                        spread_model=spread_model,
                     )
                 except ValueError as exc:
                     st.caption(f"Couldn't compute a full draft order this week: {exc}")

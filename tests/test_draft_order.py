@@ -107,6 +107,21 @@ def test_falls_back_when_entry_b_floor_excludes_everything_remaining():
     assert fourth.entry == "B" and fourth.team == "AAA" and "Fallback" in fourth.reasoning
 
 
+def test_draft_picks_works_when_both_entries_share_the_same_used_teams():
+    # Once one entry is eliminated, the UI has both algorithms draft from
+    # the surviving entry's used-teams history for *both* arguments -- this
+    # must still yield four distinct picks, not error or double-count.
+    schedule = _basic_week_schedule()
+    shared_used = {"MIA"}
+    picks = do.draft_picks(
+        SEASON, 1, used_teams_a=shared_used, used_teams_b=shared_used, rounds=2, schedule=schedule
+    )
+    teams = [p.team for p in picks]
+    assert "MIA" not in teams
+    assert len(teams) == len(set(teams)) == 4
+    assert [p.entry for p in picks] == ["A", "A", "B", "B"]
+
+
 def test_draft_picks_raises_when_nothing_left_to_draft():
     schedule = _basic_week_schedule()  # 5 games -> 10 total teams
     with pytest.raises(ValueError):
