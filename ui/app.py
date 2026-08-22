@@ -47,7 +47,7 @@ from strategy import entry_b_hedge  # noqa: E402
 
 st.set_page_config(page_title="Survivor Picker", layout="wide")
 
-ROW_COLUMNS = ["Suggestion", "Pick", "Win Prob", "Spread", "Score", "Result", "Match/Override"]
+ROW_COLUMNS = ["Suggestion", "Pick", "Win Prob", "Spread", "Score", "Result", "Match/Override", "Model Divergence"]
 
 # Market/Elo blend options offered in the UI, in market_weight order (see
 # models.win_prob.get_win_probability). Label -> market_weight.
@@ -74,6 +74,39 @@ def _matchup_display(team: str, opponent: str, is_home: bool, bold_team: bool = 
         else:
             away = f"**{away}**"
     return f"{away}@{home}"
+
+
+# Model-divergence coloring thresholds (point-spread units, see
+# models.win_prob.WinProbabilityResult.divergence): >=3 is a meaningful
+# market/Elo disagreement (red), >1 and <3 is worth a second look (amber),
+# <=1 is unremarkable (default text color).
+_DIVERGENCE_RED = "#cf222e"
+_DIVERGENCE_AMBER = "#9a6700"
+
+
+def _divergence_color_hex(divergence: Optional[float]) -> Optional[str]:
+    """Hex color for a divergence value, or None for the default/unstyled case."""
+    if divergence is None or (isinstance(divergence, float) and pd.isna(divergence)):
+        return None
+    if divergence >= 3:
+        return _DIVERGENCE_RED
+    if divergence > 1:
+        return _DIVERGENCE_AMBER
+    return None
+
+
+def _divergence_badge(divergence: Optional[float]) -> str:
+    """Inline-styled HTML span showing a divergence value, colored per `_divergence_color_hex`.
+
+    Returns "" when divergence is unavailable (no elo data for this game),
+    so callers can safely splice this into an f-string unconditionally.
+    Requires the containing st.markdown call to pass unsafe_allow_html=True.
+    """
+    if divergence is None or (isinstance(divergence, float) and pd.isna(divergence)):
+        return ""
+    color = _divergence_color_hex(divergence)
+    style = f"color: {color}; font-weight: 600;" if color else ""
+    return f' <span style="{style}">(model divergence {divergence:.1f})</span>'
 
 
 @st.cache_data(show_spinner=False)
@@ -108,6 +141,7 @@ class WeeklyRecommendation:
     reasoning: str
     available: List[entry_b_hedge.TeamCandidate]
     projected_path: Optional[Sequence[dp_optimizer.WeekPick]] = None
+    divergence: Optional[float] = None
 
 
 def get_entry_recommendation(
@@ -190,6 +224,7 @@ def get_entry_recommendation(
         reasoning=reasoning,
         available=available,
         projected_path=projected_path,
+        divergence=top.divergence,
     )
 
 
@@ -228,7 +263,8 @@ def _render_pick_line(pick: draft_order.DraftPick) -> None:
     matchup = _matchup_display(pick.team, pick.opponent, pick.is_home, bold_team=True)
     st.markdown(
         f"**Pick #{pick.pick_number} ({_ALGORITHM_NAME[pick.entry]}):** {matchup} "
-        f"— {pick.win_probability:.1%}{spread_text}"
+        f"— {pick.win_probability:.1%}{spread_text}{_divergence_badge(pick.divergence)}",
+        unsafe_allow_html=True,
     )
     st.caption(pick.reasoning)
 
@@ -258,7 +294,11 @@ def _render_entry_column(
 
     spread_text = f", spread {recommendation.spread_line:+.1f}" if recommendation.spread_line is not None else ""
     matchup = _matchup_display(recommendation.team, recommendation.opponent, recommendation.is_home, bold_team=True)
-    st.markdown(f"**Recommends:** {matchup} — {recommendation.win_probability:.1%}{spread_text}")
+    st.markdown(
+        f"**Recommends:** {matchup} — {recommendation.win_probability:.1%}{spread_text}"
+        f"{_divergence_badge(recommendation.divergence)}",
+        unsafe_allow_html=True,
+    )
     st.caption(recommendation.reasoning)
 
     for pick in extra_picks:
@@ -311,19 +351,32 @@ def _style_log_table(df: pd.DataFrame):
     def _color_flag(value):
         return "color: #9a6700; font-weight: 600;" if value == "Override" else ""
 
+    def _fmt_divergence(v):
+        return f"{v:.1f}" if isinstance(v, (int, float)) and pd.notna(v) else "—"
+
+    def _color_divergence(value):
+        if not isinstance(value, (int, float)) or pd.isna(value):
+            return ""
+        color = _divergence_color_hex(value)
+        return f"color: {color}; font-weight: 600;" if color else ""
+
     result_cols = [c for c in df.columns if c.endswith("Result")]
     flag_cols = [c for c in df.columns if c.endswith("Match/Override")]
     win_prob_cols = [c for c in df.columns if c.endswith("Win Prob")]
     spread_cols = [c for c in df.columns if c.endswith("Spread")]
+    divergence_cols = [c for c in df.columns if c.endswith("Model Divergence")]
 
     format_map = {c: _fmt_pct for c in win_prob_cols}
     format_map.update({c: _fmt_spread for c in spread_cols})
+    format_map.update({c: _fmt_divergence for c in divergence_cols})
 
     styler = df.style
     if result_cols:
         styler = styler.map(_color_result, subset=result_cols)
     if flag_cols:
         styler = styler.map(_color_flag, subset=flag_cols)
+    if divergence_cols:
+        styler = styler.map(_color_divergence, subset=divergence_cols)
     if format_map:
         styler = styler.format(format_map)
     return styler
@@ -518,6 +571,7 @@ def main() -> None:
                             ),
                             "A: Result": outcome_a,
                             "A: Match/Override": "Match" if selected_a == rec_a.team else "Override",
+                            "A: Model Divergence": cand_a.divergence,
                         }
                     )
                     if outcome_a in ("LOSS", "TIE"):
@@ -541,6 +595,7 @@ def main() -> None:
                             ),
                             "B: Result": outcome_b,
                             "B: Match/Override": "Match" if selected_b == rec_b.team else "Override",
+                            "B: Model Divergence": cand_b.divergence,
                         }
                     )
                     if outcome_b in ("LOSS", "TIE"):

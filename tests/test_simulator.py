@@ -196,6 +196,27 @@ def test_simulate_threads_market_weight_to_available_candidates():
     assert seen["kc_prob"] == pytest.approx(0.10)
 
 
+def test_simulate_carries_model_divergence_into_week_records():
+    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320)])
+    schedule["game_id"] = ["2099_01_DEN_KC"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.60},
+            {"game_id": "2099_01_DEN_KC", "season": SEASON, "week": 1, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.40},
+        ]
+    )
+    algorithm = _scripted_algorithm({1: "KC"})
+
+    without_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
+    assert without_elo.records[0].model_divergence is None
+
+    with_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0, elo_games=elo_games)
+    assert with_elo.records[0].model_divergence is not None
+    assert with_elo.records[0].model_divergence > 0
+
+
 def test_make_entry_a_algorithm_threads_market_weight():
     schedule = _schedule(
         [

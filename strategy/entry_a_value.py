@@ -44,6 +44,7 @@ class PickRecommendation:
     survival_probability: float
     projected_path: Sequence[dp_optimizer.WeekPick]
     available: Sequence[TeamCandidate]
+    divergence: Optional[float] = None
 
 
 def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
@@ -193,4 +194,5 @@ def recommend_pick(
         survival_probability=result.survival_probability,
         projected_path=result.path,
         available=available,
+        divergence=top.divergence,
     )

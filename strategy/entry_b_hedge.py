@@ -36,6 +36,7 @@ class TeamCandidate:
     is_home: bool
     win_probability: float
     spread_line: Optional[float]
+    divergence: Optional[float] = None
 
     @property
     def team_spread(self) -> Optional[float]:
@@ -54,6 +55,7 @@ class PickRecommendation:
     spread_line: Optional[float]
     reasoning: str
     ranked_picks: Sequence[TeamCandidate]
+    divergence: Optional[float] = None
 
 
 def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
@@ -97,7 +99,7 @@ def build_candidates(
             if team in used:
                 continue
             try:
-                win_probability = wp.get_win_probability(
+                result = wp.get_win_probability(
                     row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games
                 )
             except ValueError:
@@ -108,8 +110,9 @@ def build_candidates(
                     team=team,
                     opponent=opponent,
                     is_home=is_home,
-                    win_probability=win_probability,
+                    win_probability=result.win_probability,
                     spread_line=(float(spread_line) if pd.notna(spread_line) else None),
+                    divergence=result.divergence,
                 )
             )
     return candidates
@@ -211,4 +214,5 @@ def recommend_pick(
         spread_line=top.spread_line,
         reasoning=build_reasoning(top, runner_up, min_win_probability),
         ranked_picks=eligible,
+        divergence=top.divergence,
     )

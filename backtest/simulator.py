@@ -45,6 +45,7 @@ class WeekRecord:
     actual_result: Optional[float]  # home_score - away_score
     outcome: str  # "WIN" | "LOSS" | "TIE"
     still_alive: bool
+    model_divergence: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +183,7 @@ def simulate(
                 actual_result=actual_result,
                 outcome=outcome,
                 still_alive=not eliminated,
+                model_divergence=candidate.divergence,
             )
         )
 

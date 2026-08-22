@@ -16,6 +16,13 @@ nfelo's Elo-model win probability (`data.nfelo_client`) via `market_weight`:
 When nfelo data is unavailable for a game (data lag, early-season gap, or
 a game outside nfelo's coverage), it falls back to 100% market probability
 for that game and logs the fallback so it's visible during backtesting.
+
+Whenever `elo_games` is supplied, `get_win_probability` also reports each
+model's implied point spread (`market_spread`/`elo_spread`, both on the
+same spread-point scale via the calibrated logistic model) and their
+absolute difference (`divergence`) -- a display/awareness signal only,
+computed independently of `market_weight` and never used to alter the
+blended probability itself.
 """
 
 from __future__ import annotations
@@ -151,34 +158,83 @@ def spread_to_home_win_probability(
     return float(model.home_win_probability(spread_line))
 
 
+def home_win_probability_to_spread_line(
+    home_win_probability: float, model: Optional[SpreadModel] = None
+) -> float:
+    """Inverse of `spread_to_home_win_probability`: map a home-team win probability back
+    to its equivalent spread_line, via the same calibrated logistic model. Used to put a
+    non-spread probability (e.g. nfelo's) on the same spread-point scale as the market's
+    own spread_line, for `model_divergence` comparisons.
+    """
+    model = model or get_spread_model()
+    p = min(max(float(home_win_probability), 1e-9), 1.0 - 1e-9)
+    logit = float(np.log(p / (1.0 - p)))
+    return (logit - model.intercept) / model.slope
+
+
 def _has_moneylines(game_row: Mapping[str, Any]) -> bool:
     home_ml = game_row.get("home_moneyline")
     away_ml = game_row.get("away_moneyline")
     return pd.notna(home_ml) and pd.notna(away_ml)
 
 
-def _market_win_probability(
+def _market_home_win_probability(
     game_row: Mapping[str, Any],
-    team: str,
-    home_team: str,
-    away_team: str,
     spread_model: Optional[SpreadModel],
 ) -> float:
-    """The market-derived probability alone: de-vigged moneylines, or spread-model fallback."""
+    """The market-derived home-team win probability: de-vigged moneylines, or spread-model fallback."""
     if _has_moneylines(game_row):
-        home_prob, away_prob = devig_moneylines(
+        home_prob, _away_prob = devig_moneylines(
             float(game_row["home_moneyline"]), float(game_row["away_moneyline"])
         )
-    else:
-        spread_line = game_row.get("spread_line")
-        if spread_line is None or pd.isna(spread_line):
-            raise ValueError(
-                "game_row has neither moneylines nor a spread_line to fall back on"
-            )
-        home_prob = spread_to_home_win_probability(float(spread_line), model=spread_model)
-        away_prob = 1.0 - home_prob
+        return home_prob
 
-    return home_prob if team == home_team else away_prob
+    spread_line = game_row.get("spread_line")
+    if spread_line is None or pd.isna(spread_line):
+        raise ValueError(
+            "game_row has neither moneylines nor a spread_line to fall back on"
+        )
+    return spread_to_home_win_probability(float(spread_line), model=spread_model)
+
+
+def _team_perspective(home_value: float, team: str, home_team: str) -> float:
+    """Flip a home-perspective value (positive = favors home) to `team`'s perspective."""
+    return home_value if team == home_team else -home_value
+
+
+def _market_spread(
+    game_row: Mapping[str, Any],
+    home_market_prob: float,
+    team: str,
+    home_team: str,
+    spread_model: Optional[SpreadModel],
+) -> float:
+    """`team`'s market-implied point spread: the game's actual posted spread_line when
+    available (it's already in spread-point units), else the market probability's
+    logistic-equivalent spread.
+    """
+    spread_line = game_row.get("spread_line")
+    if spread_line is not None and not pd.isna(spread_line):
+        home_spread = float(spread_line)
+    else:
+        home_spread = home_win_probability_to_spread_line(home_market_prob, spread_model)
+    return _team_perspective(home_spread, team, home_team)
+
+
+@dataclass(frozen=True)
+class WinProbabilityResult:
+    """Result of `get_win_probability`: the blended probability plus model-divergence context.
+
+    `market_spread` is always populated. `elo_spread`/`divergence` are None
+    whenever `elo_games` wasn't supplied, or nfelo has no rating for this
+    particular game -- `divergence` is a display/awareness signal only,
+    computed independently of `market_weight`, never a scoring input.
+    """
+
+    win_probability: float
+    market_spread: float
+    elo_spread: Optional[float]
+    divergence: Optional[float]
 
 
 def get_win_probability(
@@ -187,8 +243,8 @@ def get_win_probability(
     market_weight: float = 1.0,
     spread_model: Optional[SpreadModel] = None,
     elo_games: Optional[pd.DataFrame] = None,
-) -> float:
-    """Return `team`'s pregame win probability for `game_row`.
+) -> WinProbabilityResult:
+    """Return `team`'s pregame win probability for `game_row`, plus model-divergence context.
 
     `game_row` is a mapping (e.g. a pandas Series or dict) following the
     schema returned by `data.nflverse_client.load_games()`: at minimum
@@ -200,19 +256,24 @@ def get_win_probability(
     calibrated spread model.
 
     Args:
-        market_weight: Fraction of the result drawn from the market
-            probability; the rest (1 - market_weight) is drawn from
-            nfelo's Elo win probability (`elo_games`, see
+        market_weight: Fraction of `.win_probability` drawn from the
+            market probability; the rest (1 - market_weight) is drawn
+            from nfelo's Elo win probability (`elo_games`, see
             `data.nfelo_client.load_nfelo_games`). Must be one of
-            `VALID_MARKET_WEIGHTS`. At the default of 1.0, `elo_games` is
-            never consulted and behavior is identical to a pure market
-            probability.
+            `VALID_MARKET_WEIGHTS`.
         elo_games: Pre-loaded nfelo table from
             `data.nfelo_client.load_nfelo_games()`. Required (non-None)
-            whenever `market_weight < 1.0`. If nfelo has no rating for
-            this game, falls back to 100% market probability for it and
-            logs a warning identifying the game, so fallbacks are visible
-            during backtesting.
+            whenever `market_weight < 1.0`. When supplied (at any
+            `market_weight`), it's also used to compute `.elo_spread`/
+            `.divergence` for display, independent of the blend. If nfelo
+            has no rating for this game, `.win_probability` falls back to
+            100% market probability and `.elo_spread`/`.divergence` come
+            back None; a warning identifying the game is logged either
+            way, so fallbacks are visible during backtesting.
+
+    Returns:
+        A `WinProbabilityResult` (`.win_probability`, `.market_spread`,
+        `.elo_spread`, `.divergence`).
     """
     if market_weight not in VALID_MARKET_WEIGHTS:
         raise ValueError(f"market_weight must be one of {VALID_MARKET_WEIGHTS}, got {market_weight!r}")
@@ -224,24 +285,41 @@ def get_win_probability(
             f"team {team!r} is not playing in this game ({away_team} @ {home_team})"
         )
 
-    market_prob = _market_win_probability(game_row, team, home_team, away_team, spread_model)
-    if market_weight >= 1.0:
-        return market_prob
+    home_market_prob = _market_home_win_probability(game_row, spread_model)
+    market_prob = home_market_prob if team == home_team else 1.0 - home_market_prob
+    market_spread = _market_spread(game_row, home_market_prob, team, home_team, spread_model)
 
-    if elo_games is None:
+    win_probability = market_prob
+    elo_spread = None
+    divergence = None
+
+    if elo_games is not None:
+        game_id = game_row.get("game_id")
+        elo_prob = nfelo_client.get_team_elo_win_probability(elo_games, game_id, team)
+        if elo_prob is None:
+            logger.warning(
+                "No nfelo rating for game_id=%r team=%r (season=%r week=%r); "
+                "falling back to 100%% market probability (if a blend was requested) and "
+                "model_divergence cannot be computed for this game.",
+                game_id,
+                team,
+                game_row.get("season"),
+                game_row.get("week"),
+            )
+        else:
+            home_elo_prob = elo_prob if team == home_team else 1.0 - elo_prob
+            elo_spread = _team_perspective(
+                home_win_probability_to_spread_line(home_elo_prob, spread_model), team, home_team
+            )
+            divergence = abs(market_spread - elo_spread)
+            if market_weight < 1.0:
+                win_probability = market_weight * market_prob + (1.0 - market_weight) * elo_prob
+    elif market_weight < 1.0:
         raise ValueError("elo_games is required when market_weight < 1.0")
 
-    game_id = game_row.get("game_id")
-    elo_prob = nfelo_client.get_team_elo_win_probability(elo_games, game_id, team)
-    if elo_prob is None:
-        logger.warning(
-            "No nfelo rating for game_id=%r team=%r (season=%r week=%r); "
-            "falling back to 100%% market probability for this game.",
-            game_id,
-            team,
-            game_row.get("season"),
-            game_row.get("week"),
-        )
-        return market_prob
-
-    return market_weight * market_prob + (1.0 - market_weight) * elo_prob
+    return WinProbabilityResult(
+        win_probability=win_probability,
+        market_spread=market_spread,
+        elo_spread=elo_spread,
+        divergence=divergence,
+    )

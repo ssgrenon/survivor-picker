@@ -43,6 +43,7 @@ class DraftPick:
     win_probability: float
     spread_line: Optional[float]
     reasoning: str
+    divergence: Optional[float] = None
 
 
 def _draft_pick_for_entry(
@@ -133,6 +134,7 @@ def _draft_pick_for_entry(
         win_probability=top.win_probability,
         spread_line=top.spread_line,
         reasoning=reasoning,
+        divergence=top.divergence,
     )
 
 

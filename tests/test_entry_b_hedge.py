@@ -185,3 +185,36 @@ def test_build_candidates_threads_market_weight_and_elo_games():
     )
     kc_blended = next(c for c in blended if c.team == "KC").win_probability
     assert kc_blended == pytest.approx(0.5 * kc_market + 0.5 * kc_elo)
+
+
+def test_build_candidates_populates_divergence_independent_of_market_weight():
+    schedule = _week_schedule_with_game_ids()
+    elo_games = _elo_games_for_week_schedule()
+
+    # KC has no divergence info without elo_games.
+    market_only = hedge.build_candidates(2026, 5, used_teams=set(), schedule=schedule)
+    assert next(c for c in market_only if c.team == "KC").divergence is None
+
+    # With elo_games supplied, divergence is populated the same regardless
+    # of market_weight -- it's a display signal, not a scoring input.
+    divergences = set()
+    for weight in (1.0, 0.5, 0.0):
+        candidates = hedge.build_candidates(
+            2026, 5, used_teams=set(), schedule=schedule, market_weight=weight, elo_games=elo_games
+        )
+        kc = next(c for c in candidates if c.team == "KC")
+        assert kc.divergence is not None
+        divergences.add(round(kc.divergence, 9))
+    assert len(divergences) == 1
+
+
+def test_recommend_pick_carries_divergence_through():
+    # market_weight=1.0 keeps KC's win probability at its market value (so it
+    # still clears the floor) while still exercising divergence, which is
+    # computed independently of market_weight whenever elo_games is given.
+    schedule = _week_schedule_with_game_ids()
+    elo_games = _elo_games_for_week_schedule()
+    rec = hedge.recommend_pick(2026, 5, used_teams=set(), schedule=schedule, market_weight=1.0, elo_games=elo_games)
+    assert rec.team == "KC"
+    assert rec.divergence is not None
+    assert rec.divergence == next(c for c in rec.ranked_picks if c.team == "KC").divergence

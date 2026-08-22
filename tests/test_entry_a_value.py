@@ -203,3 +203,23 @@ def test_build_candidates_and_recommend_pick_thread_market_weight():
     )
     kc_available = next(c for c in rec.available if c.team == "KC")
     assert kc_available.win_probability == pytest.approx(0.15)
+
+
+def test_recommend_pick_carries_divergence_through():
+    schedule = _week_schedule()
+    schedule["game_id"] = ["2026_05_DEN_KC", "2026_05_SEA_SF"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2026_05_DEN_KC", "season": SEASON, "week": 5, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.15},
+            {"game_id": "2026_05_DEN_KC", "season": SEASON, "week": 5, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.85},
+        ]
+    )
+    # market_weight=1.0 so the DP optimizer still picks KC on its market
+    # merits, while divergence is still populated (computed independently
+    # of market_weight whenever elo_games is supplied).
+    rec = strat.recommend_pick(SEASON, 5, used_teams=set(), schedule=schedule, market_weight=1.0, elo_games=elo_games)
+    assert rec.team == "KC"
+    assert rec.divergence is not None
+    assert rec.divergence == next(c for c in rec.available if c.team == "KC").divergence

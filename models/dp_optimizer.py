@@ -56,6 +56,7 @@ class WeekPick:
     is_home: bool
     win_probability: float
     spread_line: Optional[float]
+    divergence: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -93,7 +94,7 @@ def _week_candidates(
             if team in excluded_teams:
                 continue
             try:
-                win_probability = wp.get_win_probability(
+                result = wp.get_win_probability(
                     row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games
                 )
             except ValueError:
@@ -105,8 +106,9 @@ def _week_candidates(
                     team=team,
                     opponent=opponent,
                     is_home=is_home,
-                    win_probability=win_probability,
+                    win_probability=result.win_probability,
                     spread_line=(float(spread_line) if pd.notna(spread_line) else None),
+                    divergence=result.divergence,
                 )
             )
     picks.sort(key=lambda p: p.win_probability, reverse=True)
