@@ -6,7 +6,8 @@ season, the current week, the set of already-used teams, and every
 available (not-yet-used) team's win probability and matchup info; it
 returns the team to pick. The pick's actual result is looked up via
 `data.nflverse_client`, and the entry is marked eliminated the first
-week its pick loses (ties are eliminating too, by default).
+week its pick loses. A tie counts as a win in this survivor pool
+variant, not an elimination.
 
 Three ready-made algorithms are provided for comparison:
 `highest_win_probability_algorithm` (a naive baseline), and factories
@@ -43,7 +44,7 @@ class WeekRecord:
     predicted_win_probability: float
     spread_line: Optional[float]
     actual_result: Optional[float]  # home_score - away_score
-    outcome: str  # "WIN" | "LOSS" | "TIE"
+    outcome: str  # "WIN" | "LOSS" (a tie is scored as a WIN, see score_pick)
     still_alive: bool
     model_divergence: Optional[float] = None
 
@@ -76,7 +77,9 @@ def score_pick(game_row: pd.Series, team: str) -> Tuple[Optional[float], str]:
     """Return (actual_result, outcome) for `team` in `game_row`.
 
     actual_result is home_score - away_score (nflverse's `result` convention).
-    outcome is "UNPLAYED" when the game has no final score yet.
+    outcome is "UNPLAYED" when the game has no final score yet; a tie is
+    scored as a "WIN" (not a separate outcome), since this survivor pool
+    variant treats a tie as a win rather than an elimination.
     """
     home_score = game_row["home_score"]
     away_score = game_row["away_score"]
@@ -85,7 +88,7 @@ def score_pick(game_row: pd.Series, team: str) -> Tuple[Optional[float], str]:
 
     result = float(home_score) - float(away_score)
     if result == 0:
-        return result, "TIE"
+        return result, "WIN"
 
     home_won = result > 0
     team_is_home = team == game_row["home_team"]
@@ -100,7 +103,6 @@ def simulate(
     algorithm_name: Optional[str] = None,
     schedule: Optional[pd.DataFrame] = None,
     initial_used_teams: Optional[Iterable[str]] = None,
-    eliminate_on_tie: bool = True,
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
@@ -116,7 +118,6 @@ def simulate(
             re-downloading across repeated/compared runs.
         initial_used_teams: Teams to treat as already spent before
             `starting_week` (e.g. picks made earlier in the real season).
-        eliminate_on_tie: Whether a tied pick counts as elimination.
         market_weight / elo_games: see `models.win_prob.get_win_probability`.
             Used to build the `available` candidate pool handed to
             `algorithm` each week.
@@ -170,7 +171,7 @@ def simulate(
             break
 
         used_teams.add(pick)
-        eliminated = outcome == "LOSS" or (outcome == "TIE" and eliminate_on_tie)
+        eliminated = outcome == "LOSS"
 
         records.append(
             WeekRecord(
@@ -212,7 +213,6 @@ def compare_algorithms(
     algorithms: Mapping[str, PickAlgorithm],
     schedule: Optional[pd.DataFrame] = None,
     initial_used_teams: Optional[Iterable[str]] = None,
-    eliminate_on_tie: bool = True,
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
@@ -229,7 +229,6 @@ def compare_algorithms(
             algorithm_name=name,
             schedule=schedule,
             initial_used_teams=initial_used_teams,
-            eliminate_on_tie=eliminate_on_tie,
             spread_model=spread_model,
             market_weight=market_weight,
             elo_games=elo_games,

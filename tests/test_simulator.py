@@ -73,37 +73,24 @@ def test_simulate_eliminated_on_loss_stops_advancing():
     assert result.records[-1].still_alive is False
 
 
-def test_simulate_tie_eliminates_by_default():
+def test_simulate_tie_counts_as_a_win_and_does_not_eliminate():
     schedule = _schedule(
         [
             _row(1, "KC", "DEN", 30, 10),
-            _row(2, "SF", "LV", 20, 20),  # tie
-        ]
-    )
-    algorithm = _scripted_algorithm({1: "KC", 2: "SF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
-
-    assert result.records[-1].outcome == "TIE"
-    assert result.eliminated_week == 2
-    assert result.stop_reason == "eliminated"
-
-
-def test_simulate_tie_not_eliminating_when_configured():
-    schedule = _schedule(
-        [
-            _row(1, "KC", "DEN", 30, 10),
-            _row(2, "SF", "LV", 20, 20),  # tie, but doesn't eliminate
+            _row(2, "SF", "LV", 20, 20),  # tie -- counts as a win in this survivor pool variant
             _row(3, "BUF", "MIA", 24, 21),
         ]
     )
     algorithm = _scripted_algorithm({1: "KC", 2: "SF", 3: "BUF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, eliminate_on_tie=False)
+    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
 
     assert result.eliminated_week is None
     assert [r.week for r in result.records] == [1, 2, 3]
-    assert result.records[1].outcome == "TIE"
+    assert result.records[1].outcome == "WIN"
+    assert result.records[1].actual_result == pytest.approx(0.0)
     assert result.records[1].still_alive is True
     assert result.survived_full_season is True
+    assert result.weeks_survived == 3
 
 
 def test_simulate_stops_on_unplayed_game():
@@ -197,7 +184,10 @@ def test_simulate_threads_market_weight_to_available_candidates():
 
 
 def test_simulate_carries_model_divergence_into_week_records():
-    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320)])
+    # spread=None forces market_spread to derive from the -400 moneyline
+    # (a big home favorite) rather than a posted spread_line, so it's
+    # directly comparable to nfelo's much less confident 60% home rating.
+    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320, spread=None)])
     schedule["game_id"] = ["2099_01_DEN_KC"]
     elo_games = pd.DataFrame(
         [
@@ -214,7 +204,10 @@ def test_simulate_carries_model_divergence_into_week_records():
 
     with_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0, elo_games=elo_games)
     assert with_elo.records[0].model_divergence is not None
-    assert with_elo.records[0].model_divergence > 0
+    # Market favors KC (home) far more heavily (-400) than nfelo does (60%),
+    # so nfelo's home-team spread is smaller than the market's -- negative
+    # under the signed (elo_spread - market_spread) convention.
+    assert with_elo.records[0].model_divergence < 0
 
 
 def test_make_entry_a_algorithm_threads_market_weight():

@@ -184,11 +184,13 @@ def test_get_win_probability_falls_back_to_market_when_elo_missing(caplog):
 
 
 def test_market_spread_uses_the_posted_spread_line_directly():
+    # market_spread is always in the home team's convention, regardless of
+    # which team's win probability was requested.
     game = {**GAME_WITH_ID, "spread_line": 6.5}
     result = wp.get_win_probability(game, "KC")  # KC is home
     assert result.market_spread == pytest.approx(6.5)
     away_result = wp.get_win_probability(game, "DET")
-    assert away_result.market_spread == pytest.approx(-6.5)  # flipped for the away team
+    assert away_result.market_spread == pytest.approx(6.5)
 
 
 def test_market_spread_derived_from_moneylines_when_no_spread_line_posted():
@@ -220,15 +222,41 @@ def test_elo_spread_and_divergence_computed_regardless_of_market_weight():
     for weight in (1.0, 0.5, 0.0):
         result = wp.get_win_probability(game, "KC", market_weight=weight, elo_games=elo_games)
         assert result.elo_spread == pytest.approx(expected_elo_spread)
-        assert result.divergence == pytest.approx(abs(result.market_spread - expected_elo_spread))
+        assert result.divergence == pytest.approx(expected_elo_spread - result.market_spread)
 
 
-def test_divergence_is_symmetric_in_magnitude_for_both_teams():
+def test_divergence_is_signed_positive_when_elo_favors_home_more_than_market():
+    # market has KC (home) favored by 1; nfelo's 80% home win probability
+    # implies a much bigger home-favored spread -- elo rates the home team
+    # more favorably than the market, so divergence should be positive.
+    game = {**GAME_WITH_ID, "spread_line": 1.0}
+    elo_games = _elo_games(home_prob=0.80)
+    result = wp.get_win_probability(game, "KC", market_weight=1.0, elo_games=elo_games)
+    assert result.divergence > 0
+    assert result.divergence == pytest.approx(result.elo_spread - result.market_spread)
+
+
+def test_divergence_is_signed_negative_when_elo_favors_home_less_than_market():
+    # market has KC (home) favored by 10; nfelo instead sees the home team
+    # as a near coinflip -- elo rates the home team less favorably than the
+    # market, so divergence should be negative.
+    game = {**GAME_WITH_ID, "spread_line": 10.0}
+    elo_games = _elo_games(home_prob=0.51)
+    result = wp.get_win_probability(game, "KC", market_weight=1.0, elo_games=elo_games)
+    assert result.divergence < 0
+
+
+def test_divergence_is_identical_regardless_of_which_team_is_evaluated():
+    # Computed entirely in the home team's convention, so it must be the
+    # exact same number for both sides of the same game -- not merely equal
+    # in magnitude with a flipped sign.
     game = {**GAME_WITH_ID, "spread_line": 1.0}
     elo_games = _elo_games(home_prob=0.80)
     home_result = wp.get_win_probability(game, "KC", market_weight=0.5, elo_games=elo_games)
     away_result = wp.get_win_probability(game, "DET", market_weight=0.5, elo_games=elo_games)
     assert home_result.divergence == pytest.approx(away_result.divergence)
+    assert home_result.market_spread == pytest.approx(away_result.market_spread)
+    assert home_result.elo_spread == pytest.approx(away_result.elo_spread)
 
 
 def test_divergence_is_none_without_elo_games():
