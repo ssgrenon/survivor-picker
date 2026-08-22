@@ -514,7 +514,13 @@ def main() -> None:
                 "Entry A", "A", eliminated_a, rec_a, f"pick_a_{season}_{current_week}", extra_picks=extra_a
             )
 
+        # Entry B must never end up recommending (or offering) either of Entry
+        # A's two displayed picks -- its own confirmed/selected pick and its
+        # pick #2 alternate -- not just whichever one is currently selected.
+        entry_a_pick2_team = next((d.team for d in draft if d.pick_number == 2), None)
         exclude_for_b = {selected_a} if selected_a else set()
+        if entry_a_pick2_team:
+            exclude_for_b.add(entry_a_pick2_team)
         rec_b = (
             None
             if eliminated_b
