@@ -58,6 +58,19 @@ class FutureValue:
     opportunities: Sequence[WeekOpportunity]
 
 
+def _safe_win_probability(
+    row: pd.Series, team: str, spread_model: Optional[wp.SpreadModel]
+) -> Optional[float]:
+    """`win_prob.get_win_probability`, returning None instead of raising when
+    the game has neither moneylines nor a spread_line yet (too far out for
+    odds to be posted) -- treated the same as a bye: nothing to evaluate.
+    """
+    try:
+        return wp.get_win_probability(row, team, spread_model=spread_model)
+    except ValueError:
+        return None
+
+
 def decay_weight(weeks_out: int, decay_rate: float = DEFAULT_DECAY_RATE) -> float:
     """Weight for a matchup `weeks_out` weeks from the current week (1 = next week)."""
     if weeks_out < 1:
@@ -127,7 +140,7 @@ def compute_future_value(
 
     current_rows = team_games[team_games["week"] == current_week]
     current_prob = (
-        wp.get_win_probability(current_rows.iloc[0], team, spread_model=spread_model)
+        _safe_win_probability(current_rows.iloc[0], team, spread_model)
         if not current_rows.empty
         else None
     )
@@ -137,14 +150,18 @@ def compute_future_value(
         (team_games["week"] > current_week) & (team_games["week"] <= last_week)
     ].sort_values("week")
 
-    opportunities = [
-        WeekOpportunity(
-            week=int(row["week"]),
-            win_probability=wp.get_win_probability(row, team, spread_model=spread_model),
-            weight=decay_weight(int(row["week"]) - current_week, decay_rate),
+    opportunities = []
+    for _, row in future_games.iterrows():
+        win_probability = _safe_win_probability(row, team, spread_model)
+        if win_probability is None:
+            continue  # no odds posted yet for that far out -- can't evaluate it
+        opportunities.append(
+            WeekOpportunity(
+                week=int(row["week"]),
+                win_probability=win_probability,
+                weight=decay_weight(int(row["week"]) - current_week, decay_rate),
+            )
         )
-        for _, row in future_games.iterrows()
-    ]
 
     if opportunities:
         best = max(opportunities, key=lambda o: o.weighted_value)

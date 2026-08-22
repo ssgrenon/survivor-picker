@@ -96,3 +96,44 @@ def test_get_future_value_matches_compute_future_value():
     scalar = fv.get_future_value("KC", schedule, current_week=1, lookahead_weeks=6, decay_rate=0.8)
     full = fv.compute_future_value("KC", schedule, current_week=1, lookahead_weeks=6, decay_rate=0.8)
     assert scalar == pytest.approx(full.future_value)
+
+
+def test_future_week_without_odds_is_skipped_not_raised():
+    # Week 3 has neither moneylines nor a spread_line yet (too far out for
+    # a line to be posted) -- it should be skipped like a bye, not raise.
+    schedule = pd.DataFrame(
+        [
+            _row(1, "KC", "LAC", 120, -140),
+            {
+                "week": 3,
+                "home_team": "KC",
+                "away_team": "DEN",
+                "home_moneyline": None,
+                "away_moneyline": None,
+                "spread_line": None,
+            },
+            _row(4, "KC", "LV", -150, 130),
+        ]
+    )
+    result = fv.compute_future_value("KC", schedule, current_week=1, lookahead_weeks=6, decay_rate=0.8)
+    weeks_considered = {o.week for o in result.opportunities}
+    assert weeks_considered == {4}
+
+
+def test_current_week_without_odds_uses_zero_baseline():
+    schedule = pd.DataFrame(
+        [
+            {
+                "week": 1,
+                "home_team": "KC",
+                "away_team": "LAC",
+                "home_moneyline": None,
+                "away_moneyline": None,
+                "spread_line": None,
+            },
+            _row(3, "KC", "DEN", -300, 250),
+        ]
+    )
+    result = fv.compute_future_value("KC", schedule, current_week=1, lookahead_weeks=6, decay_rate=0.8)
+    assert result.current_week_probability is None
+    assert result.future_value == pytest.approx(result.best_future_weighted_value)

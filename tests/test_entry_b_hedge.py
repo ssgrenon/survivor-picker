@@ -99,6 +99,31 @@ def test_build_candidates_excludes_used_teams():
     assert {"KC", "SF", "SEA"} <= teams
 
 
+def test_build_candidates_skips_games_with_no_odds_yet():
+    schedule = pd.concat(
+        [
+            _week_schedule(),
+            pd.DataFrame(
+                [
+                    {
+                        "week": 5,
+                        "home_team": "MIA",
+                        "away_team": "NYJ",
+                        "home_moneyline": None,
+                        "away_moneyline": None,
+                        "spread_line": None,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    candidates = hedge.build_candidates(2026, 5, used_teams=set(), schedule=schedule)
+    teams = {c.team for c in candidates}
+    assert "MIA" not in teams
+    assert "NYJ" not in teams
+
+
 def test_recommend_pick_picks_highest_prob_above_floor():
     schedule = _week_schedule()
     rec = hedge.recommend_pick(2026, 5, used_teams=set(), schedule=schedule)

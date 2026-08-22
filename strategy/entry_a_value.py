@@ -168,7 +168,12 @@ def build_candidates(
     decay_rate: float = future_value.DEFAULT_DECAY_RATE,
     spread_model: Optional[wp.SpreadModel] = None,
 ) -> List[TeamCandidate]:
-    """Build the list of available (not-yet-used) teams' candidates for `week`."""
+    """Build the list of available (not-yet-used) teams' candidates for `week`.
+
+    Teams whose game has neither moneylines nor a spread_line yet (too far
+    out for odds to be posted) are skipped -- there's nothing to rank them
+    by until a line exists.
+    """
     if schedule is None:
         schedule = nflverse_client.load_games(season=season)
 
@@ -185,7 +190,10 @@ def build_candidates(
         ):
             if team in used:
                 continue
-            win_probability = wp.get_win_probability(row, team, spread_model=spread_model)
+            try:
+                win_probability = wp.get_win_probability(row, team, spread_model=spread_model)
+            except ValueError:
+                continue  # no odds posted yet for this game -- nothing to rank it by
             remaining = future_value.load_remaining_schedule(team, season, week, schedule=schedule)
             fv_score = future_value.get_future_value(
                 team,
