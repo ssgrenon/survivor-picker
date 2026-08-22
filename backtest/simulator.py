@@ -61,7 +61,8 @@ class BacktestResult:
     records: Sequence[WeekRecord]
 
 
-def _find_game_row(schedule: pd.DataFrame, week: int, team: str) -> pd.Series:
+def find_game_row(schedule: pd.DataFrame, week: int, team: str) -> pd.Series:
+    """Look up `team`'s game row for `week` in `schedule`."""
     rows = schedule[
         (schedule["week"] == week) & ((schedule["home_team"] == team) | (schedule["away_team"] == team))
     ]
@@ -70,7 +71,7 @@ def _find_game_row(schedule: pd.DataFrame, week: int, team: str) -> pd.Series:
     return rows.iloc[0]
 
 
-def _score_pick(game_row: pd.Series, team: str) -> Tuple[Optional[float], str]:
+def score_pick(game_row: pd.Series, team: str) -> Tuple[Optional[float], str]:
     """Return (actual_result, outcome) for `team` in `game_row`.
 
     actual_result is home_score - away_score (nflverse's `result` convention).
@@ -149,8 +150,8 @@ def simulate(
                 f"team for season {season} week {week}"
             )
 
-        game_row = _find_game_row(season_schedule, week, pick)
-        actual_result, outcome = _score_pick(game_row, pick)
+        game_row = find_game_row(season_schedule, week, pick)
+        actual_result, outcome = score_pick(game_row, pick)
 
         if outcome == "UNPLAYED":
             stop_reason = "hit_unplayed_game"
