@@ -37,6 +37,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from backtest import simulator as sim  # noqa: E402
+from data import nfelo_client  # noqa: E402
 from data import nflverse_client as nc  # noqa: E402
 from models import dp_optimizer  # noqa: E402
 from models import win_prob as wp  # noqa: E402
@@ -47,6 +48,17 @@ from strategy import entry_b_hedge  # noqa: E402
 st.set_page_config(page_title="Survivor Picker", layout="wide")
 
 ROW_COLUMNS = ["Suggestion", "Pick", "Win Prob", "Spread", "Score", "Result", "Match/Override"]
+
+# Market/Elo blend options offered in the UI, in market_weight order (see
+# models.win_prob.get_win_probability). Label -> market_weight.
+MARKET_WEIGHT_OPTIONS = {
+    "100% Market / 0% Elo": 1.0,
+    "75% Market / 25% Elo": 0.75,
+    "50% Market / 50% Elo": 0.5,
+    "25% Market / 75% Elo": 0.25,
+    "0% Market / 100% Elo": 0.0,
+}
+DEFAULT_MARKET_WEIGHT_LABEL = "100% Market / 0% Elo"
 
 
 def _matchup_display(team: str, opponent: str, is_home: bool, bold_team: bool = False) -> str:
@@ -79,6 +91,11 @@ def _get_spread_model():
     return wp.get_spread_model()
 
 
+@st.cache_data(show_spinner="Loading nfelo Elo ratings...")
+def _get_elo_games() -> pd.DataFrame:
+    return nfelo_client.load_nfelo_games()
+
+
 @dataclass(frozen=True)
 class WeeklyRecommendation:
     """One entry's suggested pick for one week, plus its full available pool."""
@@ -102,18 +119,22 @@ def get_entry_recommendation(
     spread_model: wp.SpreadModel,
     exclude_teams: Set[str] = frozenset(),
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> Optional[WeeklyRecommendation]:
     """Recommend a pick for `entry` ("A" or "B"), excluding `exclude_teams` from the pool.
 
     `exclude_teams` is how Entry B is kept off whatever team Entry A picked
     this week -- Entry A itself is never called with an exclusion, since it
     always picks independently and has priority. `lookahead_weeks` (N) only
-    affects Entry A's DP optimizer.
+    affects Entry A's DP optimizer. `market_weight` / `elo_games`: see
+    `models.win_prob.get_win_probability`.
     """
     projected_path = None
     if entry == "A":
         raw_available = entry_a_value.build_candidates(
-            season, week, used_teams, schedule=schedule, spread_model=spread_model
+            season, week, used_teams, schedule=schedule, spread_model=spread_model,
+            market_weight=market_weight, elo_games=elo_games,
         )
         available = [c for c in raw_available if c.team not in exclude_teams]
         if not available:
@@ -126,6 +147,8 @@ def get_entry_recommendation(
                 schedule=schedule,
                 spread_model=spread_model,
                 lookahead_weeks=lookahead_weeks,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
         except ValueError:
             rec = None
@@ -141,7 +164,8 @@ def get_entry_recommendation(
             )
     else:
         raw_available = entry_b_hedge.build_candidates(
-            season, week, used_teams, schedule=schedule, spread_model=spread_model
+            season, week, used_teams, schedule=schedule, spread_model=spread_model,
+            market_weight=market_weight, elo_games=elo_games,
         )
         available = [c for c in raw_available if c.team not in exclude_teams]
         if not available:
@@ -317,7 +341,7 @@ def main() -> None:
     lookahead_options = list(range(1, 19))
     default_lookahead_index = lookahead_options.index(dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS)
 
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 2, 1])
     with col1:
         season = st.selectbox("Season", options=list(reversed(seasons)), index=0)
     with col2:
@@ -330,6 +354,18 @@ def main() -> None:
             help="How many weeks ahead Entry A's DP optimizer plans over (see 'Prompt 3').",
         )
     with col4:
+        weight_label = st.select_slider(
+            "Market vs Elo Blend",
+            options=list(MARKET_WEIGHT_OPTIONS.keys()),
+            value=DEFAULT_MARKET_WEIGHT_LABEL,
+            help=(
+                "Blends market-derived win probability (moneylines/spread) with "
+                "nfelo's Elo-model win probability. 100% Market matches the "
+                "original behavior."
+            ),
+        )
+        market_weight = MARKET_WEIGHT_OPTIONS[weight_label]
+    with col5:
         st.write("")
         st.write("")
         if st.button("Reset Simulation", type="primary"):
@@ -349,6 +385,7 @@ def main() -> None:
 
     schedule = _load_schedule(season)
     spread_model = _get_spread_model()
+    elo_games = _get_elo_games() if market_weight < 1.0 else None
     max_week = int(schedule["week"].max())
 
     st.divider()
@@ -385,6 +422,8 @@ def main() -> None:
                     schedule=schedule,
                     spread_model=spread_model,
                     lookahead_weeks=lookahead_weeks,
+                    market_weight=market_weight,
+                    elo_games=elo_games,
                 )
             except ValueError:
                 draft = []
@@ -401,7 +440,15 @@ def main() -> None:
             None
             if eliminated_a
             else get_entry_recommendation(
-                "A", season, current_week, used_a, schedule, spread_model, lookahead_weeks=lookahead_weeks
+                "A",
+                season,
+                current_week,
+                used_a,
+                schedule,
+                spread_model,
+                lookahead_weeks=lookahead_weeks,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
         )
         col_a, col_b = st.columns(2)
@@ -415,7 +462,15 @@ def main() -> None:
             None
             if eliminated_b
             else get_entry_recommendation(
-                "B", season, current_week, used_b, schedule, spread_model, exclude_teams=exclude_for_b
+                "B",
+                season,
+                current_week,
+                used_b,
+                schedule,
+                spread_model,
+                exclude_teams=exclude_for_b,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
         )
         with col_b:
@@ -445,7 +500,7 @@ def main() -> None:
             st.warning("Neither entry has an available pick this week.")
         else:
             if st.button("Confirm Both Picks & Advance", type="primary"):
-                row = {"Week": current_week}
+                row = {"Week": current_week, "Blend": weight_label}
 
                 if selected_a is not None:
                     cand_a = next(c for c in rec_a.available if c.team == selected_a)
@@ -503,6 +558,7 @@ def main() -> None:
     if log:
         st.divider()
         st.subheader("Results Log")
+        st.caption(f"Current blend weighting: **{weight_label}** (see the 'Blend' column for each row's setting).")
 
         log_df = pd.DataFrame(log)
         table_height = min(35 * (len(log_df) + 1) + 3, 800)

@@ -153,6 +153,8 @@ def recommend_joint_pick(
     state_path_b: Path = entry_b_hedge.DEFAULT_STATE_PATH,
     min_win_probability_b: float = DEFAULT_MIN_WIN_PROBABILITY_B,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> JointRecommendation:
     """Recommend the joint-optimal (Entry A, Entry B) pick pair for `season`/`week`.
 
@@ -161,6 +163,7 @@ def recommend_joint_pick(
             Loaded from that entry's state file if omitted.
         schedule: Optional pre-loaded full-season schedule, to avoid
             re-downloading across repeated calls.
+        market_weight / elo_games: see `models.win_prob.get_win_probability`.
     """
     if schedule is None:
         schedule = nflverse_client.load_games(season=season)
@@ -170,10 +173,12 @@ def recommend_joint_pick(
         used_teams_b = entry_b_hedge.load_used_teams(state_path_b)
 
     candidates_a = entry_b_hedge.build_candidates(
-        season, week, used_teams_a, schedule=schedule, spread_model=spread_model
+        season, week, used_teams_a, schedule=schedule, spread_model=spread_model,
+        market_weight=market_weight, elo_games=elo_games,
     )
     candidates_b = entry_b_hedge.build_candidates(
-        season, week, used_teams_b, schedule=schedule, spread_model=spread_model
+        season, week, used_teams_b, schedule=schedule, spread_model=spread_model,
+        market_weight=market_weight, elo_games=elo_games,
     )
 
     pairs = find_valid_pairs(

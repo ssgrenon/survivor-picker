@@ -133,3 +133,37 @@ def test_draft_picks_raises_when_nothing_left_to_draft():
             rounds=6,  # 12 picks requested, only 10 teams exist
             schedule=schedule,
         )
+
+
+def test_draft_picks_threads_market_weight_and_changes_the_pick():
+    # Under pure market probability, KC (~90%) is Entry A's pick #1 (see
+    # _basic_week_schedule). If nfelo instead rates KC as a coinflip and BUF
+    # (a modest ~71% market favorite) as a near-lock, a 0%-market/100%-elo
+    # draft should promote BUF to pick #1 instead -- proving market_weight
+    # actually reaches the DP optimizer draft_order delegates to for Entry A.
+    schedule = _basic_week_schedule()
+    schedule["game_id"] = [
+        "2099_01_DEN_KC", "2099_01_SEA_SF", "2099_01_NYJ_BUF", "2099_01_NYG_DAL", "2099_01_NE_MIA",
+    ]
+    elo_rows = []
+    for game_id, home, away, home_prob in (
+        ("2099_01_DEN_KC", "KC", "DEN", 0.50),
+        ("2099_01_SEA_SF", "SF", "SEA", 0.80),
+        ("2099_01_NYJ_BUF", "BUF", "NYJ", 0.99),
+        ("2099_01_NYG_DAL", "DAL", "NYG", 0.64),
+        ("2099_01_NE_MIA", "MIA", "NE", 0.60),
+    ):
+        elo_rows.append({"game_id": game_id, "season": SEASON, "week": 1, "team": home, "opponent": away,
+                          "is_home": True, "elo_win_probability": home_prob})
+        elo_rows.append({"game_id": game_id, "season": SEASON, "week": 1, "team": away, "opponent": home,
+                          "is_home": False, "elo_win_probability": 1.0 - home_prob})
+    elo_games = pd.DataFrame(elo_rows)
+
+    market_picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule)
+    assert market_picks[0].team == "KC"
+
+    blended_picks = do.draft_picks(
+        SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule,
+        market_weight=0.0, elo_games=elo_games,
+    )
+    assert blended_picks[0].team == "BUF"

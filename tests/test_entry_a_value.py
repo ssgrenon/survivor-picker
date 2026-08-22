@@ -179,3 +179,27 @@ def test_recommend_pick_raises_when_all_teams_used():
     schedule = _week_schedule()
     with pytest.raises(ValueError):
         strat.recommend_pick(SEASON, 5, used_teams={"KC", "DEN", "SF", "SEA"}, schedule=schedule)
+
+
+def test_build_candidates_and_recommend_pick_thread_market_weight():
+    schedule = _week_schedule()
+    schedule["game_id"] = ["2026_05_DEN_KC", "2026_05_SEA_SF"]
+    elo_games = pd.DataFrame(
+        [
+            {"game_id": "2026_05_DEN_KC", "season": SEASON, "week": 5, "team": "KC", "opponent": "DEN",
+             "is_home": True, "elo_win_probability": 0.15},
+            {"game_id": "2026_05_DEN_KC", "season": SEASON, "week": 5, "team": "DEN", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 0.85},
+        ]
+    )
+
+    candidates = strat.build_candidates(
+        SEASON, 5, used_teams=set(), schedule=schedule, market_weight=0.0, elo_games=elo_games
+    )
+    assert next(c for c in candidates if c.team == "KC").win_probability == pytest.approx(0.15)
+
+    rec = strat.recommend_pick(
+        SEASON, 5, used_teams=set(), schedule=schedule, market_weight=0.0, elo_games=elo_games
+    )
+    kc_available = next(c for c in rec.available if c.team == "KC")
+    assert kc_available.win_probability == pytest.approx(0.15)

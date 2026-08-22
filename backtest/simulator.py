@@ -101,6 +101,8 @@ def simulate(
     initial_used_teams: Optional[Iterable[str]] = None,
     eliminate_on_tie: bool = True,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     """Run `algorithm` through `season` starting at `starting_week` until it's eliminated.
 
@@ -114,6 +116,9 @@ def simulate(
         initial_used_teams: Teams to treat as already spent before
             `starting_week` (e.g. picks made earlier in the real season).
         eliminate_on_tie: Whether a tied pick counts as elimination.
+        market_weight / elo_games: see `models.win_prob.get_win_probability`.
+            Used to build the `available` candidate pool handed to
+            `algorithm` each week.
     """
     if algorithm_name is None:
         algorithm_name = getattr(algorithm, "__name__", "algorithm")
@@ -133,7 +138,13 @@ def simulate(
     for week in range(starting_week, max_week + 1):
         try:
             available = entry_b_hedge.build_candidates(
-                season, week, used_teams, schedule=season_schedule, spread_model=spread_model
+                season,
+                week,
+                used_teams,
+                schedule=season_schedule,
+                spread_model=spread_model,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
         except ValueError:
             continue  # no games at all this week (schedule gap) -- nothing to pick
@@ -201,6 +212,8 @@ def compare_algorithms(
     initial_used_teams: Optional[Iterable[str]] = None,
     eliminate_on_tie: bool = True,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> Dict[str, BacktestResult]:
     """Run several algorithms through the same season/week for side-by-side comparison."""
     if schedule is None:
@@ -216,6 +229,8 @@ def compare_algorithms(
             initial_used_teams=initial_used_teams,
             eliminate_on_tie=eliminate_on_tie,
             spread_model=spread_model,
+            market_weight=market_weight,
+            elo_games=elo_games,
         )
         for name, algorithm in algorithms.items()
     }
@@ -239,6 +254,8 @@ def make_entry_a_algorithm(
     per_week_top_k: int = dp_optimizer.DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = dp_optimizer.DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> PickAlgorithm:
     """Build an algorithm replicating Entry A's DP-optimized strategy."""
 
@@ -258,6 +275,8 @@ def make_entry_a_algorithm(
             per_week_top_k=per_week_top_k,
             max_candidate_teams=max_candidate_teams,
             spread_model=spread_model,
+            market_weight=market_weight,
+            elo_games=elo_games,
         ).team
 
     return _pick

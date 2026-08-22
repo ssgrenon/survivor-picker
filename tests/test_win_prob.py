@@ -98,3 +98,72 @@ def test_get_win_probability_raises_when_no_data_available():
     }
     with pytest.raises(ValueError):
         wp.get_win_probability(game, "KC", spread_model=FIXED_MODEL)
+
+
+GAME_WITH_ID = {
+    "game_id": "2023_01_DET_KC",
+    "season": 2023,
+    "week": 1,
+    "home_team": "KC",
+    "away_team": "DET",
+    "spread_line": 4.0,
+    "home_moneyline": -198,
+    "away_moneyline": 164,
+}
+
+
+def _elo_games(home_prob: float = 0.80) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"game_id": "2023_01_DET_KC", "season": 2023, "week": 1, "team": "KC", "opponent": "DET",
+             "is_home": True, "elo_win_probability": home_prob},
+            {"game_id": "2023_01_DET_KC", "season": 2023, "week": 1, "team": "DET", "opponent": "KC",
+             "is_home": False, "elo_win_probability": 1.0 - home_prob},
+        ]
+    )
+
+
+def test_get_win_probability_rejects_invalid_market_weight():
+    with pytest.raises(ValueError):
+        wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.3, elo_games=_elo_games())
+
+
+def test_get_win_probability_default_market_weight_ignores_elo_games():
+    # market_weight defaults to 1.0 -- elo_games is never consulted, so
+    # omitting it (or passing garbage) doesn't matter.
+    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC")
+    assert market_prob == pytest.approx(wp.get_win_probability(GAME_WITH_ID, "KC", elo_games=None))
+
+
+def test_get_win_probability_requires_elo_games_when_blending():
+    with pytest.raises(ValueError):
+        wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.5, elo_games=None)
+
+
+def test_get_win_probability_blends_market_and_elo():
+    elo_games = _elo_games(home_prob=0.80)
+    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0, elo_games=elo_games)
+    elo_only = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.0, elo_games=elo_games)
+    assert elo_only == pytest.approx(0.80)
+
+    for weight in (0.75, 0.5, 0.25):
+        blended = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=weight, elo_games=elo_games)
+        assert blended == pytest.approx(weight * market_prob + (1 - weight) * elo_only)
+
+
+def test_get_win_probability_blend_is_symmetric_for_both_teams():
+    elo_games = _elo_games(home_prob=0.80)
+    home_prob = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.5, elo_games=elo_games)
+    away_prob = wp.get_win_probability(GAME_WITH_ID, "DET", market_weight=0.5, elo_games=elo_games)
+    assert home_prob + away_prob == pytest.approx(1.0)
+
+
+def test_get_win_probability_falls_back_to_market_when_elo_missing(caplog):
+    empty_elo = pd.DataFrame(columns=["game_id", "season", "week", "team", "opponent", "is_home", "elo_win_probability"])
+    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0)
+
+    with caplog.at_level("WARNING"):
+        blended = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.5, elo_games=empty_elo)
+
+    assert blended == pytest.approx(market_prob)
+    assert any("nfelo rating" in record.message for record in caplog.records)

@@ -1,6 +1,6 @@
 """Pregame win probability model.
 
-Two sources of truth, in priority order:
+The "market" probability comes from two sources of truth, in priority order:
 
 1. Moneyline-implied probability, de-vigged by normalizing the home/away
    implied probabilities to sum to 1, when both `home_moneyline` and
@@ -9,6 +9,13 @@ Two sources of truth, in priority order:
    moneylines are unavailable. It is calibrated against actual outcomes
    (`result`) of completed games pulled from several recent nflverse
    seasons via `data.nflverse_client`.
+
+`get_win_probability` can optionally blend that market probability with
+nfelo's Elo-model win probability (`data.nfelo_client`) via `market_weight`:
+`blended = market_weight * market_prob + (1 - market_weight) * elo_prob`.
+When nfelo data is unavailable for a game (data lag, early-season gap, or
+a game outside nfelo's coverage), it falls back to 100% market probability
+for that game and logs the fallback so it's visible during backtesting.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ from typing import Any, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from data import nfelo_client
 from data import nflverse_client
 
 logger = logging.getLogger(__name__)
@@ -27,6 +35,11 @@ logger = logging.getLogger(__name__)
 # Number of most-recent seasons (with available data) to calibrate the
 # spread fallback model against by default.
 DEFAULT_CALIBRATION_SEASONS = 10
+
+# Valid market_weight values: fraction of the blended probability drawn
+# from the market probability, with the remainder (1 - market_weight)
+# drawn from nfelo's Elo win probability.
+VALID_MARKET_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.0)
 
 
 @dataclass(frozen=True)
@@ -144,28 +157,14 @@ def _has_moneylines(game_row: Mapping[str, Any]) -> bool:
     return pd.notna(home_ml) and pd.notna(away_ml)
 
 
-def get_win_probability(
+def _market_win_probability(
     game_row: Mapping[str, Any],
     team: str,
-    spread_model: Optional[SpreadModel] = None,
+    home_team: str,
+    away_team: str,
+    spread_model: Optional[SpreadModel],
 ) -> float:
-    """Return `team`'s pregame win probability for `game_row`.
-
-    `game_row` is a mapping (e.g. a pandas Series or dict) following the
-    schema returned by `data.nflverse_client.load_games()`: at minimum
-    home_team, away_team, spread_line, and optionally home_moneyline/
-    away_moneyline.
-
-    Uses de-vigged moneyline-implied probability when both moneylines are
-    present; otherwise falls back to the calibrated spread model.
-    """
-    home_team = game_row["home_team"]
-    away_team = game_row["away_team"]
-    if team not in (home_team, away_team):
-        raise ValueError(
-            f"team {team!r} is not playing in this game ({away_team} @ {home_team})"
-        )
-
+    """The market-derived probability alone: de-vigged moneylines, or spread-model fallback."""
     if _has_moneylines(game_row):
         home_prob, away_prob = devig_moneylines(
             float(game_row["home_moneyline"]), float(game_row["away_moneyline"])
@@ -180,3 +179,69 @@ def get_win_probability(
         away_prob = 1.0 - home_prob
 
     return home_prob if team == home_team else away_prob
+
+
+def get_win_probability(
+    game_row: Mapping[str, Any],
+    team: str,
+    market_weight: float = 1.0,
+    spread_model: Optional[SpreadModel] = None,
+    elo_games: Optional[pd.DataFrame] = None,
+) -> float:
+    """Return `team`'s pregame win probability for `game_row`.
+
+    `game_row` is a mapping (e.g. a pandas Series or dict) following the
+    schema returned by `data.nflverse_client.load_games()`: at minimum
+    game_id, home_team, away_team, spread_line, and optionally
+    home_moneyline/away_moneyline.
+
+    The market component uses de-vigged moneyline-implied probability
+    when both moneylines are present; otherwise it falls back to the
+    calibrated spread model.
+
+    Args:
+        market_weight: Fraction of the result drawn from the market
+            probability; the rest (1 - market_weight) is drawn from
+            nfelo's Elo win probability (`elo_games`, see
+            `data.nfelo_client.load_nfelo_games`). Must be one of
+            `VALID_MARKET_WEIGHTS`. At the default of 1.0, `elo_games` is
+            never consulted and behavior is identical to a pure market
+            probability.
+        elo_games: Pre-loaded nfelo table from
+            `data.nfelo_client.load_nfelo_games()`. Required (non-None)
+            whenever `market_weight < 1.0`. If nfelo has no rating for
+            this game, falls back to 100% market probability for it and
+            logs a warning identifying the game, so fallbacks are visible
+            during backtesting.
+    """
+    if market_weight not in VALID_MARKET_WEIGHTS:
+        raise ValueError(f"market_weight must be one of {VALID_MARKET_WEIGHTS}, got {market_weight!r}")
+
+    home_team = game_row["home_team"]
+    away_team = game_row["away_team"]
+    if team not in (home_team, away_team):
+        raise ValueError(
+            f"team {team!r} is not playing in this game ({away_team} @ {home_team})"
+        )
+
+    market_prob = _market_win_probability(game_row, team, home_team, away_team, spread_model)
+    if market_weight >= 1.0:
+        return market_prob
+
+    if elo_games is None:
+        raise ValueError("elo_games is required when market_weight < 1.0")
+
+    game_id = game_row.get("game_id")
+    elo_prob = nfelo_client.get_team_elo_win_probability(elo_games, game_id, team)
+    if elo_prob is None:
+        logger.warning(
+            "No nfelo rating for game_id=%r team=%r (season=%r week=%r); "
+            "falling back to 100%% market probability for this game.",
+            game_id,
+            team,
+            game_row.get("season"),
+            game_row.get("week"),
+        )
+        return market_prob
+
+    return market_weight * market_prob + (1.0 - market_weight) * elo_prob

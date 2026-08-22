@@ -56,6 +56,8 @@ def _draft_pick_for_entry(
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
     lookahead_weeks: int,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> DraftPick:
     """Compute one entry's next pick, treating already-drafted teams as unavailable.
 
@@ -75,6 +77,8 @@ def _draft_pick_for_entry(
                 schedule=schedule,
                 spread_model=spread_model,
                 lookahead_weeks=lookahead_weeks,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
             top = rec.projected_path[0]
             reasoning = rec.reasoning
@@ -84,7 +88,13 @@ def _draft_pick_for_entry(
     else:
         try:
             rec = entry_b_hedge.recommend_pick(
-                season, week, used_teams=combined_used, schedule=schedule, spread_model=spread_model
+                season,
+                week,
+                used_teams=combined_used,
+                schedule=schedule,
+                spread_model=spread_model,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
             top = rec.ranked_picks[0]
             reasoning = rec.reasoning
@@ -94,7 +104,13 @@ def _draft_pick_for_entry(
 
     if top is None:
         available = entry_b_hedge.build_candidates(
-            season, week, combined_used, schedule=schedule, spread_model=spread_model
+            season,
+            week,
+            combined_used,
+            schedule=schedule,
+            spread_model=spread_model,
+            market_weight=market_weight,
+            elo_games=elo_games,
         )
         if not available:
             raise ValueError(
@@ -129,6 +145,8 @@ def draft_picks(
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> List[DraftPick]:
     """Draft `rounds` picks for Entry A, then `rounds` picks for Entry B.
 
@@ -146,6 +164,7 @@ def draft_picks(
             DP optimizer (see `models.dp_optimizer`). Entry B's hedge
             strategy doesn't use a lookahead, so this only affects "A"
             picks.
+        market_weight / elo_games: see `models.win_prob.get_win_probability`.
 
     Returns:
         A flat list of `rounds * 2` `DraftPick`s in priority order:
@@ -174,6 +193,8 @@ def draft_picks(
                 schedule,
                 spread_model,
                 lookahead_weeks,
+                market_weight=market_weight,
+                elo_games=elo_games,
             )
             picks.append(pick)
             drafted.add(pick.team)

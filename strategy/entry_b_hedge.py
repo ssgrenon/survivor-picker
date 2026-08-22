@@ -69,12 +69,16 @@ def build_candidates(
     used_teams: Iterable[str] = (),
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> List[TeamCandidate]:
     """Build the list of available (not-yet-used) teams' candidates for `week`.
 
     Teams whose game has neither moneylines nor a spread_line yet (too far
     out for odds to be posted) are skipped -- there's nothing to rank them
     by until a line exists.
+
+    `market_weight` / `elo_games`: see `models.win_prob.get_win_probability`.
     """
     if schedule is None:
         schedule = nflverse_client.load_games(season=season)
@@ -93,7 +97,9 @@ def build_candidates(
             if team in used:
                 continue
             try:
-                win_probability = wp.get_win_probability(row, team, spread_model=spread_model)
+                win_probability = wp.get_win_probability(
+                    row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games
+                )
             except ValueError:
                 continue
             spread_line = row.get("spread_line")
@@ -163,6 +169,8 @@ def recommend_pick(
     state_path: Path = DEFAULT_STATE_PATH,
     min_win_probability: float = DEFAULT_MIN_WIN_PROBABILITY,
     spread_model: Optional[wp.SpreadModel] = None,
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
 ) -> PickRecommendation:
     """Recommend Entry B's safest pick for `season`/`week`.
 
@@ -171,12 +179,19 @@ def recommend_pick(
             `state_path` (Entry B's state file) if omitted.
         schedule: Optional pre-loaded full-season schedule, to avoid
             re-downloading across repeated calls.
+        market_weight / elo_games: see `models.win_prob.get_win_probability`.
     """
     if used_teams is None:
         used_teams = load_used_teams(state_path)
 
     candidates = build_candidates(
-        season, week, used_teams, schedule=schedule, spread_model=spread_model
+        season,
+        week,
+        used_teams,
+        schedule=schedule,
+        spread_model=spread_model,
+        market_weight=market_weight,
+        elo_games=elo_games,
     )
     eligible = rank_picks(candidates, min_win_probability=min_win_probability)
     if not eligible:
