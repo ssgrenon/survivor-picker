@@ -58,7 +58,7 @@ MARKET_WEIGHT_OPTIONS = {
     "25% Market / 75% Elo": 0.25,
     "0% Market / 100% Elo": 0.0,
 }
-DEFAULT_MARKET_WEIGHT_LABEL = "100% Market / 0% Elo"
+DEFAULT_MARKET_WEIGHT_LABEL = "50% Market / 50% Elo"
 
 
 def _matchup_display(team: str, opponent: str, is_home: bool, bold_team: bool = False) -> str:
