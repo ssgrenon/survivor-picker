@@ -5,9 +5,10 @@ description = "NFL survivor pool picker utilizing historical data to fine tune a
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "pandas>=2.0",
+    "pandas>=2.1",
     "requests>=2.28",
     "numpy>=1.24",
+    "streamlit>=1.30",
 ]
 
 [project.optional-dependencies]
@@ -20,4 +21,4 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["data*", "models*"]
+include = ["data*", "models*", "strategy*", "backtest*"]
