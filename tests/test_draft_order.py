@@ -167,3 +167,67 @@ def test_draft_picks_threads_market_weight_and_changes_the_pick():
         market_weight=0.0, elo_games=elo_games,
     )
     assert blended_picks[0].team == "BUF"
+
+
+def _home_override_schedule():
+    # Pick #1 candidates: AWAYFAV (away, ~90%) beats everything else, so
+    # both entries' round-1 pick lands on an away team.
+    # HOMEFAV (home, ~65%) is the best *home* candidate overall, but
+    # AWAYFAV2 (away, ~80%) out-ranks it on raw win probability -- so a
+    # normal (non-overridden) round-2 pick would take AWAYFAV2, while the
+    # home-game override must instead force HOMEFAV / WEAK3.
+    return pd.DataFrame(
+        [
+            _row(1, "WEAK1", "AWAYFAV", 650, -900),  # AWAYFAV ~90% (away)
+            _row(1, "HOMEFAV", "WEAK2", -190, 160),  # HOMEFAV ~65% (home)
+            _row(1, "WEAK3", "AWAYFAV2", 210, -250),  # AWAYFAV2 ~71% (away)
+        ]
+    )
+
+
+def test_pick_2_forces_best_home_game_when_pick_1_is_away():
+    schedule = _home_override_schedule()
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    pick1, pick2 = picks[0], picks[1]
+
+    assert pick1.team == "AWAYFAV" and pick1.is_home is False
+    assert pick2.team == "HOMEFAV" and pick2.is_home is True
+    assert "Home-game override" in pick2.reasoning
+
+
+def test_pick_4_forces_best_home_game_when_pick_3_is_away():
+    schedule = _home_override_schedule()
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    pick3, pick4 = picks[2], picks[3]
+
+    # Entry A already drafted AWAYFAV and HOMEFAV, so Entry B's best
+    # remaining option is AWAYFAV2 (away, ~71%), clearing its 65% floor.
+    assert pick3.team == "AWAYFAV2" and pick3.is_home is False
+    assert pick4.team == "WEAK3" and pick4.is_home is True
+    assert "Home-game override" in pick4.reasoning
+
+
+def test_no_home_override_when_pick_1_is_already_home():
+    # _basic_week_schedule's pick #1 (KC, ~90% home favorite) is already a
+    # home game, so pick #2 should follow the normal (unconstrained)
+    # recommendation logic -- no override language in its reasoning.
+    schedule = _basic_week_schedule()
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    assert picks[0].is_home is True
+    assert "Home-game override" not in picks[1].reasoning
+
+
+def test_home_override_falls_back_to_normal_pick_when_no_home_game_remains():
+    schedule = _home_override_schedule()
+    # All three home teams from the schedule are already used, so once
+    # AWAYFAV is drafted as pick #1 there is no home candidate left for
+    # pick #2 -- it must fall back to the normal recommendation instead of
+    # raising.
+    picks = do.draft_picks(
+        SEASON, 1, used_teams_a={"WEAK1", "HOMEFAV", "WEAK3"}, used_teams_b=set(), rounds=2, schedule=schedule
+    )
+    pick1, pick2 = picks[0], picks[1]
+
+    assert pick1.team == "AWAYFAV" and pick1.is_home is False
+    assert pick2.team == "AWAYFAV2"  # only team left for A once home teams are excluded
+    assert "Home-game override" not in pick2.reasoning

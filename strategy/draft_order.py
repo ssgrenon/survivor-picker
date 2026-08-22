@@ -12,6 +12,11 @@ optimizer, see `models.dp_optimizer`), excluding an already-drafted
 team can shift which team is genuinely optimal now, so each pick
 re-runs that entry's full recommendation logic with the already-drafted
 teams folded into its used-teams set.
+
+Home-game override: if and only if an entry's round-1 pick is an away
+game, its round-2 pick is forced to the single best available home game
+instead of that entry's normal next-best recommendation (falling back to
+the normal recommendation if no home game remains).
 """
 
 from __future__ import annotations
@@ -138,6 +143,59 @@ def _draft_pick_for_entry(
     )
 
 
+def _draft_best_home_pick_for_entry(
+    entry: str,
+    pick_number: int,
+    round_number: int,
+    round1_pick: DraftPick,
+    season: int,
+    week: int,
+    used_teams: Set[str],
+    drafted_so_far: Set[str],
+    schedule: pd.DataFrame,
+    spread_model: Optional[wp.SpreadModel],
+    market_weight: float = 1.0,
+    elo_games: Optional[pd.DataFrame] = None,
+) -> Optional[DraftPick]:
+    """The single best remaining home-team candidate for `entry`, or None if none remain.
+
+    Used for round 2 when `round1_pick` was an away game (see module
+    docstring). "Best" means highest win probability, matching how every
+    other fallback in this module picks among an undifferentiated pool.
+    """
+    combined_used = used_teams | drafted_so_far
+    available = entry_b_hedge.build_candidates(
+        season,
+        week,
+        combined_used,
+        schedule=schedule,
+        spread_model=spread_model,
+        market_weight=market_weight,
+        elo_games=elo_games,
+    )
+    home_candidates = [c for c in available if c.is_home]
+    if not home_candidates:
+        return None
+
+    top = max(home_candidates, key=lambda c: c.win_probability)
+    return DraftPick(
+        pick_number=pick_number,
+        round=round_number,
+        entry=entry,
+        team=top.team,
+        opponent=top.opponent,
+        is_home=top.is_home,
+        win_probability=top.win_probability,
+        spread_line=top.spread_line,
+        reasoning=(
+            f"Home-game override: Pick #{round1_pick.pick_number} ({round1_pick.team}) is an "
+            f"away game, so this pick is forced to the best available home game instead "
+            f"({top.win_probability:.1%})."
+        ),
+        divergence=top.divergence,
+    )
+
+
 def draft_picks(
     season: int,
     week: int,
@@ -182,23 +240,45 @@ def draft_picks(
     picks: List[DraftPick] = []
     pick_number = 0
     for entry, used_teams in (("A", used_a), ("B", used_b)):
+        round1_pick: Optional[DraftPick] = None
         for round_number in range(1, rounds + 1):
             pick_number += 1
-            pick = _draft_pick_for_entry(
-                entry,
-                pick_number,
-                round_number,
-                season,
-                week,
-                used_teams,
-                drafted,
-                schedule,
-                spread_model,
-                lookahead_weeks,
-                market_weight=market_weight,
-                elo_games=elo_games,
-            )
+
+            pick = None
+            if round_number == 2 and round1_pick is not None and not round1_pick.is_home:
+                pick = _draft_best_home_pick_for_entry(
+                    entry,
+                    pick_number,
+                    round_number,
+                    round1_pick,
+                    season,
+                    week,
+                    used_teams,
+                    drafted,
+                    schedule,
+                    spread_model,
+                    market_weight=market_weight,
+                    elo_games=elo_games,
+                )
+            if pick is None:
+                pick = _draft_pick_for_entry(
+                    entry,
+                    pick_number,
+                    round_number,
+                    season,
+                    week,
+                    used_teams,
+                    drafted,
+                    schedule,
+                    spread_model,
+                    lookahead_weeks,
+                    market_weight=market_weight,
+                    elo_games=elo_games,
+                )
+
             picks.append(pick)
             drafted.add(pick.team)
+            if round_number == 1:
+                round1_pick = pick
 
     return picks
