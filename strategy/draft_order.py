@@ -22,6 +22,7 @@ from typing import Iterable, List, Optional, Set
 import pandas as pd
 
 from data import nflverse_client
+from models import dp_optimizer
 from models import win_prob as wp
 from strategy import entry_a_value
 from strategy import entry_b_hedge
@@ -54,6 +55,7 @@ def _draft_pick_for_entry(
     drafted_so_far: Set[str],
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
+    lookahead_weeks: int,
 ) -> DraftPick:
     """Compute one entry's next pick, treating already-drafted teams as unavailable.
 
@@ -67,7 +69,12 @@ def _draft_pick_for_entry(
     if entry == "A":
         try:
             rec = entry_a_value.recommend_pick(
-                season, week, used_teams=combined_used, schedule=schedule, spread_model=spread_model
+                season,
+                week,
+                used_teams=combined_used,
+                schedule=schedule,
+                spread_model=spread_model,
+                lookahead_weeks=lookahead_weeks,
             )
             top = rec.projected_path[0]
             reasoning = rec.reasoning
@@ -121,6 +128,7 @@ def draft_picks(
     rounds: int = DEFAULT_ROUNDS,
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
+    lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
 ) -> List[DraftPick]:
     """Draft `rounds` picks for Entry A, then `rounds` picks for Entry B.
 
@@ -134,6 +142,10 @@ def draft_picks(
         rounds: How many picks to draft per entry (2 -> 4 total picks).
         schedule: Optional pre-loaded full-season schedule, to avoid
             re-downloading across repeated calls.
+        lookahead_weeks: Planning window (N) passed through to Entry A's
+            DP optimizer (see `models.dp_optimizer`). Entry B's hedge
+            strategy doesn't use a lookahead, so this only affects "A"
+            picks.
 
     Returns:
         A flat list of `rounds * 2` `DraftPick`s in priority order:
@@ -161,6 +173,7 @@ def draft_picks(
                 drafted,
                 schedule,
                 spread_model,
+                lookahead_weeks,
             )
             picks.append(pick)
             drafted.add(pick.team)
