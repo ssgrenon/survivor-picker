@@ -49,9 +49,18 @@ st.set_page_config(page_title="Survivor Picker", layout="wide")
 ROW_COLUMNS = ["Suggestion", "Pick", "Win Prob", "Spread", "Score", "Result", "Match/Override"]
 
 
-def _matchup_display(team: str, opponent: str, is_home: bool) -> str:
-    """Format as AWAY@HOME, e.g. "CIN@NE" -- the second team listed is the home team."""
+def _matchup_display(team: str, opponent: str, is_home: bool, bold_team: bool = False) -> str:
+    """Format as AWAY@HOME, e.g. "CIN@NE" -- the second team listed is the home team.
+
+    If `bold_team` is set, `team` (whichever side it's on) is wrapped in
+    markdown bold, e.g. "CIN@**NE**" when `team` is the home side.
+    """
     away, home = (opponent, team) if is_home else (team, opponent)
+    if bold_team:
+        if is_home:
+            home = f"**{home}**"
+        else:
+            away = f"**{away}**"
     return f"{away}@{home}"
 
 
@@ -92,12 +101,14 @@ def get_entry_recommendation(
     schedule: pd.DataFrame,
     spread_model: wp.SpreadModel,
     exclude_teams: Set[str] = frozenset(),
+    lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
 ) -> Optional[WeeklyRecommendation]:
     """Recommend a pick for `entry` ("A" or "B"), excluding `exclude_teams` from the pool.
 
     `exclude_teams` is how Entry B is kept off whatever team Entry A picked
     this week -- Entry A itself is never called with an exclusion, since it
-    always picks independently and has priority.
+    always picks independently and has priority. `lookahead_weeks` (N) only
+    affects Entry A's DP optimizer.
     """
     projected_path = None
     if entry == "A":
@@ -109,7 +120,12 @@ def get_entry_recommendation(
             return None
         try:
             rec = entry_a_value.recommend_pick(
-                season, week, used_teams=used_teams, schedule=schedule, spread_model=spread_model
+                season,
+                week,
+                used_teams=used_teams,
+                schedule=schedule,
+                spread_model=spread_model,
+                lookahead_weeks=lookahead_weeks,
             )
         except ValueError:
             rec = None
@@ -185,11 +201,12 @@ _ALGORITHM_NAME = {"A": "Value-Max", "B": "Hedge"}
 
 def _render_pick_line(pick: draft_order.DraftPick) -> None:
     spread_text = f", spread {pick.spread_line:+.1f}" if pick.spread_line is not None else ""
+    matchup = _matchup_display(pick.team, pick.opponent, pick.is_home, bold_team=True)
     st.markdown(
-        f"**Pick #{pick.pick_number} ({_ALGORITHM_NAME[pick.entry]}): {pick.team}** "
-        f"({'vs' if pick.is_home else '@'} {pick.opponent}) "
+        f"**Pick #{pick.pick_number} ({_ALGORITHM_NAME[pick.entry]}):** {matchup} "
         f"— {pick.win_probability:.1%}{spread_text}"
     )
+    st.caption(pick.reasoning)
 
 
 def _render_entry_column(
@@ -216,11 +233,8 @@ def _render_entry_column(
         return None
 
     spread_text = f", spread {recommendation.spread_line:+.1f}" if recommendation.spread_line is not None else ""
-    st.markdown(
-        f"**Recommends: {recommendation.team}** "
-        f"({'vs' if recommendation.is_home else '@'} {recommendation.opponent}) "
-        f"— {recommendation.win_probability:.1%}{spread_text}"
-    )
+    matchup = _matchup_display(recommendation.team, recommendation.opponent, recommendation.is_home, bold_team=True)
+    st.markdown(f"**Recommends:** {matchup} — {recommendation.win_probability:.1%}{spread_text}")
     st.caption(recommendation.reasoning)
 
     for pick in extra_picks:
@@ -300,12 +314,22 @@ def main() -> None:
 
     seasons = _available_seasons()
 
-    col1, col2, col3 = st.columns([1, 1, 1])
+    lookahead_options = list(range(1, 19))
+    default_lookahead_index = lookahead_options.index(dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS)
+
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
     with col1:
         season = st.selectbox("Season", options=list(reversed(seasons)), index=0)
     with col2:
         starting_week = st.number_input("Starting Week", min_value=1, max_value=22, value=1, step=1)
     with col3:
+        lookahead_weeks = st.selectbox(
+            "Lookahead Weeks (N)",
+            options=lookahead_options,
+            index=default_lookahead_index,
+            help="How many weeks ahead Entry A's DP optimizer plans over (see 'Prompt 3').",
+        )
+    with col4:
         st.write("")
         st.write("")
         if st.button("Reset Simulation", type="primary"):
@@ -353,7 +377,14 @@ def main() -> None:
                 draft_used_a, draft_used_b = used_a, used_b
             try:
                 draft = draft_order.draft_picks(
-                    season, current_week, draft_used_a, draft_used_b, rounds=2, schedule=schedule, spread_model=spread_model
+                    season,
+                    current_week,
+                    draft_used_a,
+                    draft_used_b,
+                    rounds=2,
+                    schedule=schedule,
+                    spread_model=spread_model,
+                    lookahead_weeks=lookahead_weeks,
                 )
             except ValueError:
                 draft = []
@@ -369,7 +400,9 @@ def main() -> None:
         rec_a = (
             None
             if eliminated_a
-            else get_entry_recommendation("A", season, current_week, used_a, schedule, spread_model)
+            else get_entry_recommendation(
+                "A", season, current_week, used_a, schedule, spread_model, lookahead_weeks=lookahead_weeks
+            )
         )
         col_a, col_b = st.columns(2)
         with col_a:
