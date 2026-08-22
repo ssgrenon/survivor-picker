@@ -73,37 +73,24 @@ def test_simulate_eliminated_on_loss_stops_advancing():
     assert result.records[-1].still_alive is False
 
 
-def test_simulate_tie_eliminates_by_default():
+def test_simulate_tie_counts_as_a_win_and_does_not_eliminate():
     schedule = _schedule(
         [
             _row(1, "KC", "DEN", 30, 10),
-            _row(2, "SF", "LV", 20, 20),  # tie
-        ]
-    )
-    algorithm = _scripted_algorithm({1: "KC", 2: "SF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
-
-    assert result.records[-1].outcome == "TIE"
-    assert result.eliminated_week == 2
-    assert result.stop_reason == "eliminated"
-
-
-def test_simulate_tie_not_eliminating_when_configured():
-    schedule = _schedule(
-        [
-            _row(1, "KC", "DEN", 30, 10),
-            _row(2, "SF", "LV", 20, 20),  # tie, but doesn't eliminate
+            _row(2, "SF", "LV", 20, 20),  # tie -- counts as a win in this survivor pool variant
             _row(3, "BUF", "MIA", 24, 21),
         ]
     )
     algorithm = _scripted_algorithm({1: "KC", 2: "SF", 3: "BUF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, eliminate_on_tie=False)
+    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
 
     assert result.eliminated_week is None
     assert [r.week for r in result.records] == [1, 2, 3]
-    assert result.records[1].outcome == "TIE"
+    assert result.records[1].outcome == "WIN"
+    assert result.records[1].actual_result == pytest.approx(0.0)
     assert result.records[1].still_alive is True
     assert result.survived_full_season is True
+    assert result.weeks_survived == 3
 
 
 def test_simulate_stops_on_unplayed_game():

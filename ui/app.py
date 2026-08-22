@@ -348,7 +348,7 @@ def _style_log_table(df: pd.DataFrame):
     def _color_result(value):
         if value == "WIN":
             return "color: #1a7f37; font-weight: 600;"
-        if value in ("LOSS", "TIE"):
+        if value == "LOSS":
             return "color: #cf222e; font-weight: 600;"
         return ""
 
@@ -578,7 +578,7 @@ def main() -> None:
                             "A: Model Divergence": cand_a.divergence,
                         }
                     )
-                    if outcome_a in ("LOSS", "TIE"):
+                    if outcome_a == "LOSS":
                         st.session_state["dual_eliminated_a"] = True
                 else:
                     row.update({f"A: {c}": "—" for c in ROW_COLUMNS})
@@ -602,7 +602,7 @@ def main() -> None:
                             "B: Model Divergence": cand_b.divergence,
                         }
                     )
-                    if outcome_b in ("LOSS", "TIE"):
+                    if outcome_b == "LOSS":
                         st.session_state["dual_eliminated_b"] = True
                 else:
                     row.update({f"B: {c}": "—" for c in ROW_COLUMNS})
