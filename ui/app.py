@@ -7,7 +7,14 @@ whichever team Entry A just picked*, so the two entries never end up on
 the same team. Once Entry A is eliminated, Entry B is no longer
 constrained and picks freely on its own.
 
-Each week you can accept either recommendation or override it from a
+Each entry's card also shows its own alternate pick (from the A-A-B-B
+draft order, see strategy.draft_order) -- Entry A's pick #2, Entry B's
+pick #4 -- guaranteed distinct from every other pick shown that week.
+Once one entry is eliminated, both algorithms keep drafting from the
+surviving entry's remaining teams, so its card shows all four
+candidates instead of just its own two.
+
+Each week you can accept a recommendation or override it from a
 dropdown of that entry's available teams; confirming both locks them in,
 reveals the actual results, and appends one row (with both entries' data
 in separate columns) to a growing results log.
@@ -173,14 +180,33 @@ def _reset_simulation(season: int, starting_week: int) -> None:
     st.session_state["dual_log"] = []
 
 
+_ALGORITHM_NAME = {"A": "Value-Max", "B": "Hedge"}
+
+
+def _render_pick_line(pick: draft_order.DraftPick) -> None:
+    spread_text = f", spread {pick.spread_line:+.1f}" if pick.spread_line is not None else ""
+    st.markdown(
+        f"**Pick #{pick.pick_number} ({_ALGORITHM_NAME[pick.entry]}): {pick.team}** "
+        f"({'vs' if pick.is_home else '@'} {pick.opponent}) "
+        f"— {pick.win_probability:.1%}{spread_text}"
+    )
+
+
 def _render_entry_column(
     label: str,
     entry: str,
     eliminated: bool,
     recommendation: Optional[WeeklyRecommendation],
     widget_key: str,
+    extra_picks: Sequence[draft_order.DraftPick] = (),
 ) -> Optional[str]:
-    """Render one entry's recommendation + pick dropdown; return the selected team (or None)."""
+    """Render one entry's recommendation + pick dropdown; return the selected team (or None).
+
+    `extra_picks` are additional alternate picks (from the draft order, see
+    strategy.draft_order) shown below the primary recommendation -- e.g.
+    Entry A's own pick #2, or all of another algorithm's picks once the
+    other entry has been eliminated.
+    """
     st.markdown(f"### {label}")
     if eliminated:
         st.caption("Eliminated — no longer picking.")
@@ -196,6 +222,9 @@ def _render_entry_column(
         f"— {recommendation.win_probability:.1%}{spread_text}"
     )
     st.caption(recommendation.reasoning)
+
+    for pick in extra_picks:
+        _render_pick_line(pick)
 
     if recommendation.projected_path and len(recommendation.projected_path) > 1:
         with st.expander(f"Projected {len(recommendation.projected_path)}-week plan"):
@@ -307,6 +336,36 @@ def main() -> None:
     else:
         st.subheader(f"Week {current_week}")
 
+        # Draft-order alternates (see strategy.draft_order): normally Entry A's
+        # own pick #2 and Entry B's own pick #4. Once one entry is eliminated,
+        # both algorithms keep drafting from the *surviving* entry's remaining
+        # teams -- so its card shows every pick from *both* algorithms except
+        # the one duplicating its own primary recommendation, still four
+        # distinct candidates total, just no longer split across two cards.
+        if eliminated_a and eliminated_b:
+            draft = []
+        else:
+            if eliminated_a:
+                draft_used_a, draft_used_b = used_b, used_b
+            elif eliminated_b:
+                draft_used_a, draft_used_b = used_a, used_a
+            else:
+                draft_used_a, draft_used_b = used_a, used_b
+            try:
+                draft = draft_order.draft_picks(
+                    season, current_week, draft_used_a, draft_used_b, rounds=2, schedule=schedule, spread_model=spread_model
+                )
+            except ValueError:
+                draft = []
+
+        if eliminated_a and not eliminated_b:
+            extra_a, extra_b = [], [d for d in draft if d.pick_number != 3]
+        elif eliminated_b and not eliminated_a:
+            extra_a, extra_b = [d for d in draft if d.pick_number != 1], []
+        else:
+            extra_a = [d for d in draft if d.pick_number == 2]
+            extra_b = [d for d in draft if d.pick_number == 4]
+
         rec_a = (
             None
             if eliminated_a
@@ -315,7 +374,7 @@ def main() -> None:
         col_a, col_b = st.columns(2)
         with col_a:
             selected_a = _render_entry_column(
-                "Entry A", "A", eliminated_a, rec_a, f"pick_a_{season}_{current_week}"
+                "Entry A", "A", eliminated_a, rec_a, f"pick_a_{season}_{current_week}", extra_picks=extra_a
             )
 
         exclude_for_b = {selected_a} if selected_a else set()
@@ -330,56 +389,13 @@ def main() -> None:
             # Key includes selected_a so Entry B's widget resets cleanly whenever
             # Entry A's pick changes and its option list shifts underneath it.
             selected_b = _render_entry_column(
-                "Entry B", "B", eliminated_b, rec_b, f"pick_b_{season}_{current_week}_{selected_a}"
+                "Entry B",
+                "B",
+                eliminated_b,
+                rec_b,
+                f"pick_b_{season}_{current_week}_{selected_a}",
+                extra_picks=extra_b,
             )
-
-        if not (eliminated_a and eliminated_b):
-            # Once one entry is eliminated, both algorithms keep drafting from the
-            # *surviving* entry's remaining teams -- still four distinct candidate
-            # picks (two per algorithm), just no longer split across two separate
-            # used-teams histories.
-            if eliminated_a:
-                draft_used_a, draft_used_b = used_b, used_b
-                expander_note = " (both algorithms drafting from Entry B's remaining teams)"
-            elif eliminated_b:
-                draft_used_a, draft_used_b = used_a, used_a
-                expander_note = " (both algorithms drafting from Entry A's remaining teams)"
-            else:
-                draft_used_a, draft_used_b = used_a, used_b
-                expander_note = ""
-
-            with st.expander(f"Top picks (draft order): Entry A's picks, then Entry B's, all distinct{expander_note}"):
-                try:
-                    draft = draft_order.draft_picks(
-                        season,
-                        current_week,
-                        draft_used_a,
-                        draft_used_b,
-                        rounds=2,
-                        schedule=schedule,
-                        spread_model=spread_model,
-                    )
-                except ValueError as exc:
-                    st.caption(f"Couldn't compute a full draft order this week: {exc}")
-                else:
-                    draft_df = pd.DataFrame(
-                        [
-                            {
-                                "Pick": d.pick_number,
-                                "Entry": d.entry,
-                                "Team": d.team,
-                                "Matchup": _matchup_display(d.team, d.opponent, d.is_home),
-                                "Win Prob": f"{d.win_probability:.1%}",
-                            }
-                            for d in draft
-                        ]
-                    )
-                    st.dataframe(draft_df, hide_index=True, use_container_width=True)
-                    st.caption(
-                        "Each entry's later picks are computed after excluding every team already "
-                        "drafted (by either entry) earlier in this order -- so a later pick can differ "
-                        "from what that entry would've picked on its own."
-                    )
 
         pending_results = []
         for selected, entry_label in ((selected_a, "A"), (selected_b, "B")):
@@ -454,12 +470,6 @@ def main() -> None:
     if log:
         st.divider()
         st.subheader("Results Log")
-
-        chart_df = pd.DataFrame(
-            [{"Week": r["Week"], "Entry A": r.get("A: Win Prob"), "Entry B": r.get("B: Win Prob")} for r in log]
-        ).set_index("Week")
-        chart_df = chart_df.apply(pd.to_numeric, errors="coerce")
-        st.line_chart(chart_df)
 
         log_df = pd.DataFrame(log)
         table_height = min(35 * (len(log_df) + 1) + 3, 800)
