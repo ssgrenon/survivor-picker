@@ -20,7 +20,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Optional, Sequence, Set
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -31,6 +31,7 @@ import streamlit as st  # noqa: E402
 
 from backtest import simulator as sim  # noqa: E402
 from data import nflverse_client as nc  # noqa: E402
+from models import dp_optimizer  # noqa: E402
 from models import win_prob as wp  # noqa: E402
 from strategy import entry_a_value  # noqa: E402
 from strategy import entry_b_hedge  # noqa: E402
@@ -72,6 +73,7 @@ class WeeklyRecommendation:
     spread_line: Optional[float]
     reasoning: str
     available: List[entry_b_hedge.TeamCandidate]
+    projected_path: Optional[Sequence[dp_optimizer.WeekPick]] = None
 
 
 def get_entry_recommendation(
@@ -89,6 +91,7 @@ def get_entry_recommendation(
     this week -- Entry A itself is never called with an exclusion, since it
     always picks independently and has priority.
     """
+    projected_path = None
     if entry == "A":
         raw_available = entry_a_value.build_candidates(
             season, week, used_teams, schedule=schedule, spread_model=spread_model
@@ -96,9 +99,22 @@ def get_entry_recommendation(
         available = [c for c in raw_available if c.team not in exclude_teams]
         if not available:
             return None
-        ranked = entry_a_value.rank_picks(available)
-        top, runner_up = ranked[0], (ranked[1] if len(ranked) > 1 else None)
-        reasoning = entry_a_value.build_reasoning(top, runner_up)
+        try:
+            rec = entry_a_value.recommend_pick(
+                season, week, used_teams=used_teams, schedule=schedule, spread_model=spread_model
+            )
+        except ValueError:
+            rec = None
+        if rec is not None and rec.team not in exclude_teams:
+            top = next(c for c in available if c.team == rec.team)
+            reasoning = rec.reasoning
+            projected_path = rec.projected_path
+        else:
+            top = max(available, key=lambda c: c.win_probability)
+            reasoning = (
+                "The multi-week optimizer couldn't produce a valid plan this week "
+                "(likely due to Entry B's exclusion); showing the single best option."
+            )
     else:
         raw_available = entry_b_hedge.build_candidates(
             season, week, used_teams, schedule=schedule, spread_model=spread_model
@@ -125,6 +141,7 @@ def get_entry_recommendation(
         spread_line=top.spread_line,
         reasoning=reasoning,
         available=available,
+        projected_path=projected_path,
     )
 
 
@@ -178,6 +195,21 @@ def _render_entry_column(
         f"— {recommendation.win_probability:.1%}{spread_text}"
     )
     st.caption(recommendation.reasoning)
+
+    if recommendation.projected_path and len(recommendation.projected_path) > 1:
+        with st.expander(f"Projected {len(recommendation.projected_path)}-week plan"):
+            plan_df = pd.DataFrame(
+                [
+                    {
+                        "Week": p.week,
+                        "Team": p.team,
+                        "Matchup": _matchup_display(p.team, p.opponent, p.is_home),
+                        "Win Prob": f"{p.win_probability:.1%}",
+                    }
+                    for p in recommendation.projected_path
+                ]
+            )
+            st.dataframe(plan_df, hide_index=True, use_container_width=True)
 
     options = [c.team for c in recommendation.available]
     labels = {

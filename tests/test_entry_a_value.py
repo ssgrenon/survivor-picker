@@ -3,77 +3,28 @@ import json
 import pandas as pd
 import pytest
 
+from models import dp_optimizer as dpo
 from strategy import entry_a_value as strat
 
+SEASON = 2026
 
-def _candidate(team, opponent, is_home, win_probability, future_value, spread_line=None):
+
+def _candidate(team, opponent, is_home, win_probability, spread_line=None):
     return strat.TeamCandidate(
-        team=team,
-        opponent=opponent,
-        is_home=is_home,
-        win_probability=win_probability,
-        future_value=future_value,
-        spread_line=spread_line,
+        team=team, opponent=opponent, is_home=is_home, win_probability=win_probability, spread_line=spread_line
     )
 
 
-def test_future_value_penalty_clips_negative_to_zero():
-    assert strat.future_value_penalty(-0.4) == 0.0
-    assert strat.future_value_penalty(0.0) == 0.0
-
-
-def test_future_value_penalty_scales_positive_and_caps_at_one():
-    assert strat.future_value_penalty(0.3) == pytest.approx(0.3)
-    assert strat.future_value_penalty(2.0) == 1.0  # capped
-
-
 def test_team_spread_flips_sign_for_away_team():
-    home = _candidate("KC", "DEN", True, 0.8, 0.0, spread_line=6.0)
-    away = _candidate("DEN", "KC", False, 0.2, 0.0, spread_line=6.0)
+    home = _candidate("KC", "DEN", True, 0.8, spread_line=6.0)
+    away = _candidate("DEN", "KC", False, 0.2, spread_line=6.0)
     assert home.team_spread == pytest.approx(6.0)
     assert away.team_spread == pytest.approx(-6.0)
 
 
 def test_team_spread_none_when_spread_unavailable():
-    c = _candidate("KC", "DEN", True, 0.8, 0.0, spread_line=None)
+    c = _candidate("KC", "DEN", True, 0.8, spread_line=None)
     assert c.team_spread is None
-
-
-def test_rank_picks_orders_by_penalized_score():
-    candidates = [
-        _candidate("KC", "DEN", True, 0.90, future_value=0.5),   # score 0.90*0.5=0.45
-        _candidate("SF", "SEA", True, 0.70, future_value=0.0),   # score 0.70*1.0=0.70
-        _candidate("BUF", "NYJ", True, 0.60, future_value=-0.2),  # score 0.60*1.0=0.60
-    ]
-    ranked = strat.rank_picks(candidates)
-    assert [p.team for p in ranked] == ["SF", "BUF", "KC"]
-    assert ranked[0].score == pytest.approx(0.70)
-    assert ranked[2].future_value_penalty == pytest.approx(0.5)
-
-
-def test_rank_picks_rejects_empty_list():
-    with pytest.raises(ValueError):
-        strat.rank_picks([])
-
-
-def test_build_reasoning_mentions_win_prob_spread_and_runner_up():
-    ranked = strat.rank_picks(
-        [
-            _candidate("KC", "DEN", True, 0.85, future_value=-0.1, spread_line=9.5),
-            _candidate("SF", "SEA", True, 0.75, future_value=0.0, spread_line=5.5),
-        ]
-    )
-    reasoning = strat.build_reasoning(ranked[0], ranked[1])
-    assert "KC" in reasoning
-    assert "85.0%" in reasoning
-    assert "favored by 9.5" in reasoning
-    assert "SF" in reasoning  # runner-up comparison
-
-
-def test_build_reasoning_handles_sole_candidate():
-    ranked = strat.rank_picks([_candidate("KC", "DEN", True, 0.85, future_value=0.0, spread_line=9.5)])
-    reasoning = strat.build_reasoning(ranked[0], None)
-    assert "only available team" in reasoning
 
 
 def test_load_used_teams_reads_state_file(tmp_path):
@@ -108,30 +59,13 @@ def _week_schedule():
                 "away_moneyline": 130,
                 "spread_line": 3.0,
             },
-            # Future weeks so future_value has something to look at.
-            {
-                "week": 6,
-                "home_team": "KC",
-                "away_team": "LAC",
-                "home_moneyline": -110,
-                "away_moneyline": -110,
-                "spread_line": 0.0,
-            },
-            {
-                "week": 6,
-                "home_team": "SF",
-                "away_team": "ARI",
-                "home_moneyline": -900,
-                "away_moneyline": 650,
-                "spread_line": 15.0,
-            },
         ]
     )
 
 
 def test_build_candidates_excludes_used_teams():
     schedule = _week_schedule()
-    candidates = strat.build_candidates(2026, 5, used_teams={"DEN"}, schedule=schedule)
+    candidates = strat.build_candidates(SEASON, 5, used_teams={"DEN"}, schedule=schedule)
     teams = {c.team for c in candidates}
     assert "DEN" not in teams
     assert {"KC", "SF", "SEA"} <= teams
@@ -156,30 +90,92 @@ def test_build_candidates_skips_games_with_no_odds_yet():
         ],
         ignore_index=True,
     )
-    candidates = strat.build_candidates(2026, 5, used_teams=set(), schedule=schedule)
+    candidates = strat.build_candidates(SEASON, 5, used_teams=set(), schedule=schedule)
     teams = {c.team for c in candidates}
     assert "MIA" not in teams
     assert "NYJ" not in teams
 
 
-def test_recommend_pick_end_to_end_with_injected_schedule_and_used_teams():
-    schedule = _week_schedule()
-    rec = strat.recommend_pick(2026, 5, used_teams=set(), schedule=schedule)
+def _sequence_result(path_probs, week_offset=1):
+    """Build a minimal OptimizedSequence for build_reasoning tests."""
+    path = [
+        dpo.WeekPick(
+            week=week_offset + i,
+            team=team,
+            opponent="OPP",
+            is_home=True,
+            win_probability=prob,
+            spread_line=9.5 if i == 0 else None,
+        )
+        for i, (team, prob) in enumerate(path_probs)
+    ]
+    survival = 1.0
+    for _, prob in path_probs:
+        survival *= prob
+    return dpo.OptimizedSequence(
+        current_week=week_offset, survival_probability=survival, path=path, candidate_universe=[t for t, _ in path_probs]
+    )
+
+
+def test_build_reasoning_when_recommendation_matches_greedy_best():
+    result = _sequence_result([("KC", 0.85)])
+    greedy_best = _candidate("KC", "OPP", True, 0.85, spread_line=9.5)
+    reasoning = strat.build_reasoning(result, greedy_best)
+    assert "KC" in reasoning
+    assert "85.0%" in reasoning
+    assert "favored by 9.5" in reasoning
+    assert "Also the single best option" in reasoning
+
+
+def test_build_reasoning_explains_a_hold():
+    result = _sequence_result([("SF", 0.70), ("KC", 0.95)], week_offset=5)
+    greedy_best = _candidate("KC", "OPP", True, 0.85)  # KC was the raw best this week, but held for week 6
+    reasoning = strat.build_reasoning(result, greedy_best)
+    assert "SF" in reasoning
+    assert "KC is actually this week's single best option" in reasoning
+    assert "Week 6" in reasoning
+    assert "Projected path after this week" in reasoning
+
+
+def test_recommend_pick_end_to_end_holds_team_for_better_matchup():
+    schedule = pd.DataFrame(
+        [
+            {
+                "season": SEASON, "week": 1, "home_team": "X", "away_team": "AAA",
+                "home_moneyline": -400, "away_moneyline": 320, "spread_line": 9.0,
+            },
+            {
+                "season": SEASON, "week": 1, "home_team": "Y", "away_team": "BBB",
+                "home_moneyline": -150, "away_moneyline": 130, "spread_line": 3.0,
+            },
+            {
+                "season": SEASON, "week": 2, "home_team": "X", "away_team": "CCC",
+                "home_moneyline": -1900, "away_moneyline": 1200, "spread_line": 17.0,
+            },
+            {
+                "season": SEASON, "week": 2, "home_team": "Z", "away_team": "DDD",
+                "home_moneyline": -125, "away_moneyline": 105, "spread_line": 1.5,
+            },
+        ]
+    )
+    rec = strat.recommend_pick(SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=2)
+
     assert rec.entry == "A"
-    assert rec.week == 5
-    assert rec.team in {"KC", "SF", "SEA", "DEN"}
-    assert 0.0 <= rec.win_probability <= 1.0
-    assert rec.team in rec.reasoning
-    assert len(rec.ranked_picks) == 4
+    assert rec.week == 1
+    assert rec.team == "Y"  # holds X for its much better week-2 matchup
+    assert [p.team for p in rec.projected_path] == ["Y", "X"]
+    assert rec.survival_probability == pytest.approx(rec.projected_path[0].win_probability * rec.projected_path[1].win_probability)
+    assert "X" in rec.reasoning and "Week 2" in rec.reasoning
+    assert {c.team for c in rec.available} == {"X", "AAA", "Y", "BBB"}
 
 
 def test_recommend_pick_raises_when_no_games_that_week():
     schedule = _week_schedule()
     with pytest.raises(ValueError):
-        strat.recommend_pick(2026, 99, used_teams=set(), schedule=schedule)
+        strat.recommend_pick(SEASON, 99, used_teams=set(), schedule=schedule)
 
 
 def test_recommend_pick_raises_when_all_teams_used():
-    schedule = _week_schedule()[:2]  # week 5 only, KC/DEN and SF/SEA
+    schedule = _week_schedule()
     with pytest.raises(ValueError):
-        strat.recommend_pick(2026, 5, used_teams={"KC", "DEN", "SF", "SEA"}, schedule=schedule)
+        strat.recommend_pick(SEASON, 5, used_teams={"KC", "DEN", "SF", "SEA"}, schedule=schedule)
