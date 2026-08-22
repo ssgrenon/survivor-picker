@@ -33,6 +33,7 @@ from backtest import simulator as sim  # noqa: E402
 from data import nflverse_client as nc  # noqa: E402
 from models import dp_optimizer  # noqa: E402
 from models import win_prob as wp  # noqa: E402
+from strategy import draft_order  # noqa: E402
 from strategy import entry_a_value  # noqa: E402
 from strategy import entry_b_hedge  # noqa: E402
 
@@ -331,6 +332,34 @@ def main() -> None:
             selected_b = _render_entry_column(
                 "Entry B", "B", eliminated_b, rec_b, f"pick_b_{season}_{current_week}_{selected_a}"
             )
+
+        if not eliminated_a and not eliminated_b:
+            with st.expander("Top picks (draft order): Entry A's picks, then Entry B's, all distinct"):
+                try:
+                    draft = draft_order.draft_picks(
+                        season, current_week, used_a, used_b, rounds=2, schedule=schedule, spread_model=spread_model
+                    )
+                except ValueError as exc:
+                    st.caption(f"Couldn't compute a full draft order this week: {exc}")
+                else:
+                    draft_df = pd.DataFrame(
+                        [
+                            {
+                                "Pick": d.pick_number,
+                                "Entry": d.entry,
+                                "Team": d.team,
+                                "Matchup": _matchup_display(d.team, d.opponent, d.is_home),
+                                "Win Prob": f"{d.win_probability:.1%}",
+                            }
+                            for d in draft
+                        ]
+                    )
+                    st.dataframe(draft_df, hide_index=True, use_container_width=True)
+                    st.caption(
+                        "Each entry's later picks are computed after excluding every team already "
+                        "drafted (by either entry) earlier in this order -- so a later pick can differ "
+                        "from what that entry would've picked on its own."
+                    )
 
         pending_results = []
         for selected, entry_label in ((selected_a, "A"), (selected_b, "B")):
