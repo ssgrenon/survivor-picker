@@ -508,10 +508,15 @@ def main() -> None:
                 elo_games=elo_games,
             )
         )
+        # Key includes lookahead_weeks and weight_label so the widget resets
+        # to the new recommendation whenever either live control changes,
+        # rather than Streamlit silently keeping the old selection (still a
+        # valid option in the new list) as if the user had chosen it.
+        pick_a_key = f"pick_a_{season}_{current_week}_{lookahead_weeks}_{weight_label}"
         col_a, col_b = st.columns(2)
         with col_a:
             selected_a = _render_entry_column(
-                "Entry A", "A", eliminated_a, rec_a, f"pick_a_{season}_{current_week}", extra_picks=extra_a
+                "Entry A", "A", eliminated_a, rec_a, pick_a_key, extra_picks=extra_a
             )
 
         # Entry B must never end up recommending (or offering) either of Entry
@@ -537,14 +542,16 @@ def main() -> None:
             )
         )
         with col_b:
-            # Key includes selected_a so Entry B's widget resets cleanly whenever
-            # Entry A's pick changes and its option list shifts underneath it.
+            # Key includes lookahead_weeks/weight_label (same reasoning as
+            # pick_a_key above) and selected_a, so Entry B's widget also
+            # resets cleanly whenever Entry A's pick changes and its option
+            # list shifts underneath it.
             selected_b = _render_entry_column(
                 "Entry B",
                 "B",
                 eliminated_b,
                 rec_b,
-                f"pick_b_{season}_{current_week}_{selected_a}",
+                f"pick_b_{season}_{current_week}_{lookahead_weeks}_{weight_label}_{selected_a}",
                 extra_picks=extra_b,
             )
 
