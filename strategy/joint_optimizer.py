@@ -153,7 +153,7 @@ def recommend_joint_pick(
     state_path_b: Path = entry_b_hedge.DEFAULT_STATE_PATH,
     min_win_probability_b: float = DEFAULT_MIN_WIN_PROBABILITY_B,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> JointRecommendation:
