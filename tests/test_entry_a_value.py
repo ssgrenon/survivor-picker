@@ -223,3 +223,25 @@ def test_recommend_pick_carries_divergence_through():
     assert rec.team == "KC"
     assert rec.divergence is not None
     assert rec.divergence == next(c for c in rec.available if c.team == "KC").divergence
+
+
+def test_build_candidates_and_recommend_pick_thread_team_bias_games():
+    schedule = _week_schedule()
+    # KC priced at ~80% (-400) but this history shows it losing every one
+    # of its home games -- market has been overrating KC at home.
+    bias_games = pd.DataFrame(
+        [
+            {"season": season, "week": 1, "home_team": "KC", "away_team": "OPP",
+             "home_score": 10, "away_score": 24, "home_moneyline": -400, "away_moneyline": 320,
+             "spread_line": 9.5}
+            for season in (2020, 2021, 2022)
+        ]
+    )
+
+    candidates = strat.build_candidates(SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games)
+    kc = next(c for c in candidates if c.team == "KC")
+    assert kc.team_bias_adjustment < 0
+
+    rec = strat.recommend_pick(SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games)
+    kc_available = next(c for c in rec.available if c.team == "KC")
+    assert kc_available.team_bias_adjustment == kc.team_bias_adjustment

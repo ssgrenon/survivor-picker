@@ -37,6 +37,7 @@ class TeamCandidate:
     win_probability: float
     spread_line: Optional[float]
     divergence: Optional[float] = None
+    team_bias_adjustment: float = 0.0
 
     @property
     def team_spread(self) -> Optional[float]:
@@ -56,6 +57,7 @@ class PickRecommendation:
     reasoning: str
     ranked_picks: Sequence[TeamCandidate]
     divergence: Optional[float] = None
+    team_bias_adjustment: float = 0.0
 
 
 def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
@@ -73,6 +75,7 @@ def build_candidates(
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[TeamCandidate]:
     """Build the list of available (not-yet-used) teams' candidates for `week`.
 
@@ -80,7 +83,8 @@ def build_candidates(
     out for odds to be posted) are skipped -- there's nothing to rank them
     by until a line exists.
 
-    `market_weight` / `elo_games`: see `models.win_prob.get_win_probability`.
+    `market_weight` / `elo_games` / `team_bias_games`: see
+    `models.win_prob.get_win_probability`.
     """
     if schedule is None:
         schedule = nflverse_client.load_games(season=season)
@@ -100,7 +104,8 @@ def build_candidates(
                 continue
             try:
                 result = wp.get_win_probability(
-                    row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games
+                    row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games,
+                    team_bias_games=team_bias_games,
                 )
             except ValueError:
                 continue
@@ -113,6 +118,7 @@ def build_candidates(
                     win_probability=result.win_probability,
                     spread_line=(float(spread_line) if pd.notna(spread_line) else None),
                     divergence=result.divergence,
+                    team_bias_adjustment=result.team_bias_adjustment,
                 )
             )
     return candidates
@@ -174,6 +180,7 @@ def recommend_pick(
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> PickRecommendation:
     """Recommend Entry B's safest pick for `season`/`week`.
 
@@ -182,7 +189,8 @@ def recommend_pick(
             `state_path` (Entry B's state file) if omitted.
         schedule: Optional pre-loaded full-season schedule, to avoid
             re-downloading across repeated calls.
-        market_weight / elo_games: see `models.win_prob.get_win_probability`.
+        market_weight / elo_games / team_bias_games: see
+            `models.win_prob.get_win_probability`.
     """
     if used_teams is None:
         used_teams = load_used_teams(state_path)
@@ -195,6 +203,7 @@ def recommend_pick(
         spread_model=spread_model,
         market_weight=market_weight,
         elo_games=elo_games,
+        team_bias_games=team_bias_games,
     )
     eligible = rank_picks(candidates, min_win_probability=min_win_probability)
     if not eligible:
@@ -215,4 +224,5 @@ def recommend_pick(
         reasoning=build_reasoning(top, runner_up, min_win_probability),
         ranked_picks=eligible,
         divergence=top.divergence,
+        team_bias_adjustment=top.team_bias_adjustment,
     )

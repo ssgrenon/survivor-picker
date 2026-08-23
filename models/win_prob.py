@@ -30,13 +30,25 @@ perspective, the same game always produces the same `divergence` no
 matter which team is being evaluated. `divergence` is a display/
 awareness signal only, computed independently of `market_weight` and
 never used to alter the blended probability itself.
+
+Whenever `team_bias_games` is supplied, `get_win_probability` applies one
+more, final adjustment: `team`'s own historical market-calibration bias
+for the given home/away context (see `compute_team_bias`) -- a small,
+shrunk, recency-weighted correction for teams the market has
+systematically over- or under-rated in that context historically. This
+is genuinely a scoring input (unlike `divergence`), added on top of the
+market/Elo blend and clamped to [0.01, 0.99]; the adjustment itself is
+also reported (`team_bias_adjustment`) so it's visible when the model is
+leaning on it. It defaults to 0.0 (no adjustment) when `team_bias_games`
+isn't supplied.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Sequence, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -54,6 +66,18 @@ DEFAULT_CALIBRATION_SEASONS = 10
 # from the market probability, with the remainder (1 - market_weight)
 # drawn from nfelo's Elo win probability.
 VALID_MARKET_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.0)
+
+# Team-bias defaults (see compute_team_bias): per-season recency-decay
+# multiplier, shrinkage constant (larger = more skepticism of small
+# samples), and the +/- cap on the final adjustment.
+DEFAULT_BIAS_DECAY_PER_SEASON = 0.85
+DEFAULT_BIAS_SHRINKAGE_K = 15.0
+DEFAULT_BIAS_MAX_ADJUSTMENT = 0.04
+
+# How often get_team_bias() recomputes, per (games_df identity, team,
+# is_home) key -- this is a slow-ish historical calculation, so it's
+# cached rather than redone on every get_win_probability call.
+BIAS_CACHE_MAX_AGE = timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -219,6 +243,125 @@ def _home_market_spread(
     return home_win_probability_to_spread_line(home_market_prob, spread_model)
 
 
+def compute_team_bias(
+    team: str,
+    is_home: bool,
+    games_df: pd.DataFrame,
+    decay_per_season: float = DEFAULT_BIAS_DECAY_PER_SEASON,
+    shrinkage_k: float = DEFAULT_BIAS_SHRINKAGE_K,
+    max_adjustment: float = DEFAULT_BIAS_MAX_ADJUSTMENT,
+    spread_model: Optional[SpreadModel] = None,
+) -> float:
+    """`team`'s historical market-calibration bias in the given home/away context.
+
+    For every completed game in `games_df` where `team` played at home (if
+    `is_home`) or away (otherwise), compares the actual outcome to the
+    market-implied win probability at the time (de-vigged moneylines, or
+    the calibrated spread model when moneylines aren't posted -- see
+    `_market_home_win_probability`). Ties are excluded (no win/loss
+    label), matching `calibrate_spread_model`. Games with neither
+    moneylines nor a spread_line are skipped.
+
+    The per-game residuals (actual_win - market_prob) are combined with
+    exponential recency weighting -- `decay_per_season ** season_age`,
+    where `season_age` is measured against the most recent season present
+    in `games_df` -- into a weighted average, then shrunk toward zero by
+    `n / (n + shrinkage_k)` (n = the weighted sample size, i.e. the sum of
+    the weights) so teams with a thin history pull close to no
+    adjustment, and finally clamped to +/- `max_adjustment`.
+
+    Returns 0.0 if `team` has no usable games in `games_df` for this
+    context.
+    """
+    side_col = "home_team" if is_home else "away_team"
+    team_games = games_df[games_df[side_col] == team]
+    team_games = team_games.dropna(subset=["home_score", "away_score"])
+    if team_games.empty:
+        return 0.0
+
+    latest_season = games_df["season"].max()
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+    for _, row in team_games.iterrows():
+        result = float(row["home_score"]) - float(row["away_score"])
+        if result == 0:
+            continue  # tie: no win/loss label, matching calibrate_spread_model
+
+        home_won = result > 0
+        actual_win = 1.0 if (home_won == is_home) else 0.0
+
+        try:
+            home_market_prob = _market_home_win_probability(row, spread_model)
+        except ValueError:
+            continue  # neither moneylines nor a spread_line for this historical game
+        market_prob = home_market_prob if is_home else 1.0 - home_market_prob
+
+        season_age = latest_season - row["season"]
+        weight = decay_per_season ** season_age
+
+        weighted_sum += weight * (actual_win - market_prob)
+        weight_total += weight
+
+    if weight_total <= 0:
+        return 0.0
+
+    weighted_avg_residual = weighted_sum / weight_total
+    shrunk = weighted_avg_residual * (weight_total / (weight_total + shrinkage_k))
+    return float(max(-max_adjustment, min(max_adjustment, shrunk)))
+
+
+_team_bias_cache: Dict[Tuple[str, bool], float] = {}
+_team_bias_cache_computed_at: Optional[datetime] = None
+_team_bias_cache_games_id: Optional[int] = None
+
+
+def get_team_bias(
+    team: str,
+    is_home: bool,
+    games_df: pd.DataFrame,
+    decay_per_season: float = DEFAULT_BIAS_DECAY_PER_SEASON,
+    shrinkage_k: float = DEFAULT_BIAS_SHRINKAGE_K,
+    max_adjustment: float = DEFAULT_BIAS_MAX_ADJUSTMENT,
+    spread_model: Optional[SpreadModel] = None,
+    force_refresh: bool = False,
+) -> float:
+    """Process-cached wrapper around `compute_team_bias`.
+
+    Recomputed at most once per `BIAS_CACHE_MAX_AGE` (default: daily), or
+    immediately whenever a different `games_df` object is passed in (so
+    tests/callers using distinct DataFrames never see another caller's
+    stale entries).
+    """
+    global _team_bias_cache, _team_bias_cache_computed_at, _team_bias_cache_games_id
+
+    now = datetime.now(timezone.utc)
+    games_id = id(games_df)
+    stale = (
+        force_refresh
+        or _team_bias_cache_computed_at is None
+        or games_id != _team_bias_cache_games_id
+        or now - _team_bias_cache_computed_at > BIAS_CACHE_MAX_AGE
+    )
+    if stale:
+        _team_bias_cache = {}
+        _team_bias_cache_computed_at = now
+        _team_bias_cache_games_id = games_id
+
+    key = (team, is_home)
+    if key not in _team_bias_cache:
+        _team_bias_cache[key] = compute_team_bias(
+            team,
+            is_home,
+            games_df,
+            decay_per_season=decay_per_season,
+            shrinkage_k=shrinkage_k,
+            max_adjustment=max_adjustment,
+            spread_model=spread_model,
+        )
+    return _team_bias_cache[key]
+
+
 @dataclass(frozen=True)
 class WinProbabilityResult:
     """Result of `get_win_probability`: the blended probability plus model-divergence context.
@@ -238,6 +381,7 @@ class WinProbabilityResult:
     market_spread: float
     elo_spread: Optional[float]
     divergence: Optional[float]
+    team_bias_adjustment: float = 0.0
 
 
 def get_win_probability(
@@ -246,6 +390,10 @@ def get_win_probability(
     market_weight: float = 1.0,
     spread_model: Optional[SpreadModel] = None,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
+    team_bias_decay_per_season: float = DEFAULT_BIAS_DECAY_PER_SEASON,
+    team_bias_shrinkage_k: float = DEFAULT_BIAS_SHRINKAGE_K,
+    team_bias_max_adjustment: float = DEFAULT_BIAS_MAX_ADJUSTMENT,
 ) -> WinProbabilityResult:
     """Return `team`'s pregame win probability for `game_row`, plus model-divergence context.
 
@@ -273,10 +421,22 @@ def get_win_probability(
             100% market probability and `.elo_spread`/`.divergence` come
             back None; a warning identifying the game is logged either
             way, so fallbacks are visible during backtesting.
+        team_bias_games: Pre-loaded historical games table (schema as
+            returned by `data.nflverse_client.load_games()`, ideally
+            covering 5+ seasons) used to compute `team`'s historical
+            market-calibration bias for this home/away context (see
+            `compute_team_bias`). When supplied, the bias is added to
+            `.win_probability` as a final step (clamped to [0.01, 0.99])
+            and reported as `.team_bias_adjustment`. Defaults to no
+            adjustment (0.0) when omitted.
+        team_bias_decay_per_season / team_bias_shrinkage_k /
+            team_bias_max_adjustment: Passed through to `compute_team_bias`
+            (via the cached `get_team_bias`) when `team_bias_games` is
+            supplied.
 
     Returns:
         A `WinProbabilityResult` (`.win_probability`, `.market_spread`,
-        `.elo_spread`, `.divergence`).
+        `.elo_spread`, `.divergence`, `.team_bias_adjustment`).
     """
     if market_weight not in VALID_MARKET_WEIGHTS:
         raise ValueError(f"market_weight must be one of {VALID_MARKET_WEIGHTS}, got {market_weight!r}")
@@ -320,9 +480,24 @@ def get_win_probability(
     elif market_weight < 1.0:
         raise ValueError("elo_games is required when market_weight < 1.0")
 
+    team_bias_adjustment = 0.0
+    if team_bias_games is not None:
+        is_home_team = team == home_team
+        team_bias_adjustment = get_team_bias(
+            team,
+            is_home_team,
+            team_bias_games,
+            decay_per_season=team_bias_decay_per_season,
+            shrinkage_k=team_bias_shrinkage_k,
+            max_adjustment=team_bias_max_adjustment,
+            spread_model=spread_model,
+        )
+        win_probability = min(0.99, max(0.01, win_probability + team_bias_adjustment))
+
     return WinProbabilityResult(
         win_probability=win_probability,
         market_spread=market_spread,
         elo_spread=elo_spread,
         divergence=divergence,
+        team_bias_adjustment=team_bias_adjustment,
     )

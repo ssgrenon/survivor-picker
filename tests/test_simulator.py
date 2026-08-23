@@ -254,3 +254,20 @@ def test_compare_algorithms_runs_each_and_keys_by_name():
     assert results["baseline"].records[0].pick == "KC"
     assert results["always_den"].records[0].pick == "DEN"
     assert results["always_den"].records[0].outcome == "LOSS"
+
+
+def test_simulate_carries_team_bias_adjustment_into_week_records():
+    schedule = _schedule([_row(1, "KC", "DEN", 30, 10, home_ml=-400, away_ml=320)])
+    bias_games = pd.DataFrame(
+        [{"season": season, "week": 1, "home_team": "KC", "away_team": "OPP",
+          "home_score": 10, "away_score": 24, "home_moneyline": -400, "away_moneyline": 320,
+          "spread_line": 9.0}
+         for season in (2020, 2021, 2022)]
+    )
+    algorithm = _scripted_algorithm({1: "KC"})
+
+    without_bias = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
+    assert without_bias.records[0].team_bias_adjustment == 0.0
+
+    with_bias = sim.simulate(SEASON, 1, algorithm, schedule=schedule, team_bias_games=bias_games)
+    assert with_bias.records[0].team_bias_adjustment < 0

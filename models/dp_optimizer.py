@@ -57,6 +57,7 @@ class WeekPick:
     win_probability: float
     spread_line: Optional[float]
     divergence: Optional[float] = None
+    team_bias_adjustment: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ def _week_candidates(
     spread_model: Optional[wp.SpreadModel],
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[WeekPick]:
     """Every not-excluded team with a usable win probability for `week`, best-first."""
     week_games = schedule[schedule["week"] == week]
@@ -95,7 +97,8 @@ def _week_candidates(
                 continue
             try:
                 result = wp.get_win_probability(
-                    row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games
+                    row, team, market_weight=market_weight, spread_model=spread_model, elo_games=elo_games,
+                    team_bias_games=team_bias_games,
                 )
             except ValueError:
                 continue  # no odds posted yet for this game
@@ -109,6 +112,7 @@ def _week_candidates(
                     win_probability=result.win_probability,
                     spread_line=(float(spread_line) if pd.notna(spread_line) else None),
                     divergence=result.divergence,
+                    team_bias_adjustment=result.team_bias_adjustment,
                 )
             )
     picks.sort(key=lambda p: p.win_probability, reverse=True)
@@ -199,6 +203,7 @@ def optimize_pick_sequence(
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> OptimizedSequence:
     """Find the optimal pick sequence starting at `current_week`.
 
@@ -211,7 +216,8 @@ def optimize_pick_sequence(
             `current_week` itself.
         per_week_top_k / max_candidate_teams: Pruning knobs -- see
             `build_candidate_universe`.
-        market_weight / elo_games: see `models.win_prob.get_win_probability`.
+        market_weight / elo_games / team_bias_games: see
+            `models.win_prob.get_win_probability`.
 
     Returns:
         An `OptimizedSequence` whose `path` covers `current_week` through
@@ -233,7 +239,8 @@ def optimize_pick_sequence(
 
     weekly_options = {
         week: _week_candidates(
-            season, week, excluded, schedule, spread_model, market_weight=market_weight, elo_games=elo_games
+            season, week, excluded, schedule, spread_model, market_weight=market_weight, elo_games=elo_games,
+            team_bias_games=team_bias_games,
         )
         for week in weeks
     }

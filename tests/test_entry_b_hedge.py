@@ -218,3 +218,41 @@ def test_recommend_pick_carries_divergence_through():
     assert rec.team == "KC"
     assert rec.divergence is not None
     assert rec.divergence == next(c for c in rec.ranked_picks if c.team == "KC").divergence
+
+
+def _team_bias_games_favoring_kc_at_home():
+    # KC priced as only a modest home favorite (-150 -> ~58%) but wins
+    # every one of these historical home games -- a real, positive bias.
+    return pd.DataFrame(
+        [
+            {"season": season, "week": 1, "home_team": "KC", "away_team": "OPP",
+             "home_score": 24, "away_score": 10, "home_moneyline": -150, "away_moneyline": 130,
+             "spread_line": 3.0}
+            for season in (2020, 2021, 2022)
+        ]
+    )
+
+
+def test_build_candidates_threads_team_bias_games():
+    schedule = _week_schedule_with_game_ids()
+    bias_games = _team_bias_games_favoring_kc_at_home()
+
+    without_bias = hedge.build_candidates(2026, 5, used_teams=set(), schedule=schedule)
+    kc_without = next(c for c in without_bias if c.team == "KC")
+    assert kc_without.team_bias_adjustment == 0.0
+
+    with_bias = hedge.build_candidates(
+        2026, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games
+    )
+    kc_with = next(c for c in with_bias if c.team == "KC")
+    assert kc_with.team_bias_adjustment > 0
+    assert kc_with.win_probability == pytest.approx(kc_without.win_probability + kc_with.team_bias_adjustment)
+
+
+def test_recommend_pick_carries_team_bias_adjustment_through():
+    schedule = _week_schedule_with_game_ids()
+    bias_games = _team_bias_games_favoring_kc_at_home()
+    rec = hedge.recommend_pick(2026, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games)
+    assert rec.team == "KC"
+    assert rec.team_bias_adjustment > 0
+    assert rec.team_bias_adjustment == next(c for c in rec.ranked_picks if c.team == "KC").team_bias_adjustment

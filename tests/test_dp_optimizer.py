@@ -212,3 +212,25 @@ def test_optimize_pick_sequence_threads_market_weight_to_change_the_plan():
     )
     assert result.recommended_pick == "Y"
     assert [p.team for p in result.path] == ["Y", "Z"]
+
+
+def test_optimize_pick_sequence_carries_team_bias_adjustment_through():
+    schedule = pd.DataFrame(
+        [{"season": SEASON, "week": 1, "home_team": "X", "away_team": "AAA",
+          "home_moneyline": -400, "away_moneyline": 320, "spread_line": 9.0}]
+    )
+    # X priced at ~80% home favorite but has consistently lost these
+    # historical home games -- market has been overrating X at home.
+    bias_games = pd.DataFrame(
+        [{"season": season, "week": 1, "home_team": "X", "away_team": "OPP",
+          "home_score": 10, "away_score": 24, "home_moneyline": -400, "away_moneyline": 320,
+          "spread_line": 9.0}
+         for season in (2020, 2021, 2022)]
+    )
+
+    result = dpo.optimize_pick_sequence(
+        SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=1, team_bias_games=bias_games
+    )
+    top = result.path[0]
+    assert top.team == "X"
+    assert top.team_bias_adjustment < 0
