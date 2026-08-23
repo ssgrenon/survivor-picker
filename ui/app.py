@@ -61,7 +61,7 @@ MARKET_WEIGHT_OPTIONS = {
     "25% Market / 75% Elo": 0.25,
     "0% Market / 100% Elo": 0.0,
 }
-DEFAULT_MARKET_WEIGHT_LABEL = "50% Market / 50% Elo"
+DEFAULT_MARKET_WEIGHT_LABEL = "75% Market / 25% Elo"
 
 
 def _matchup_display(team: str, opponent: str, is_home: bool, bold_team: bool = False) -> str:
@@ -190,7 +190,7 @@ def get_entry_recommendation(
     spread_model: wp.SpreadModel,
     exclude_teams: Set[str] = frozenset(),
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Optional[WeeklyRecommendation]:

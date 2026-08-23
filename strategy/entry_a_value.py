@@ -61,7 +61,7 @@ def build_candidates(
     used_teams: Iterable[str],
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[TeamCandidate]:
@@ -149,7 +149,7 @@ def recommend_pick(
     per_week_top_k: int = dp_optimizer.DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = dp_optimizer.DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> PickRecommendation:

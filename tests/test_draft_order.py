@@ -32,7 +32,7 @@ def _basic_week_schedule():
 
 def test_draft_picks_are_all_distinct_teams():
     schedule = _basic_week_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     teams = [p.team for p in picks]
     assert len(teams) == len(set(teams)) == 4
 
@@ -40,7 +40,7 @@ def test_draft_picks_are_all_distinct_teams():
 def test_draft_picks_follow_priority_order():
     # Entry A drafts all of its picks first, then Entry B drafts all of its.
     schedule = _basic_week_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     assert [p.entry for p in picks] == ["A", "A", "B", "B"]
     assert [p.pick_number for p in picks] == [1, 2, 3, 4]
     assert [p.round for p in picks] == [1, 2, 1, 2]
@@ -48,18 +48,18 @@ def test_draft_picks_follow_priority_order():
 
 def test_draft_picks_respects_rounds_parameter():
     schedule = _basic_week_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule, market_weight=1.0)
     assert len(picks) == 2
     assert [p.entry for p in picks] == ["A", "B"]
 
-    picks3 = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=3, schedule=schedule)
+    picks3 = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=3, schedule=schedule, market_weight=1.0)
     assert len(picks3) == 6
     assert [p.entry for p in picks3] == ["A", "A", "A", "B", "B", "B"]
 
 
 def test_draft_picks_respects_existing_used_teams_per_entry():
     schedule = _basic_week_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a={"KC"}, used_teams_b=set(), rounds=1, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a={"KC"}, used_teams_b=set(), rounds=1, schedule=schedule, market_weight=1.0)
     assert picks[0].team != "KC"
 
 
@@ -86,7 +86,7 @@ def test_second_pick_reruns_recommendation_excluding_the_first():
     # continuing to hold it -- proving it's a genuine re-optimization, not
     # a stale index into A's original (unconstrained) list.
     schedule = _holding_tension_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     teams = [p.team for p in picks]
 
     assert teams[0] == "Y"  # Entry A's unconstrained pick #1: holds X, takes Y
@@ -100,7 +100,7 @@ def test_falls_back_when_entry_b_floor_excludes_everything_remaining():
     # neither of which clears its 65% floor -- both of B's picks should
     # still resolve via the documented fallback rather than raising.
     schedule = _holding_tension_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     third, fourth = picks[2], picks[3]
 
     assert third.entry == "B" and third.team == "BBB" and "Fallback" in third.reasoning
@@ -114,7 +114,8 @@ def test_draft_picks_works_when_both_entries_share_the_same_used_teams():
     schedule = _basic_week_schedule()
     shared_used = {"MIA"}
     picks = do.draft_picks(
-        SEASON, 1, used_teams_a=shared_used, used_teams_b=shared_used, rounds=2, schedule=schedule
+        SEASON, 1, used_teams_a=shared_used, used_teams_b=shared_used, rounds=2, schedule=schedule,
+        market_weight=1.0,
     )
     teams = [p.team for p in picks]
     assert "MIA" not in teams
@@ -132,6 +133,7 @@ def test_draft_picks_raises_when_nothing_left_to_draft():
             used_teams_b=set(),
             rounds=6,  # 12 picks requested, only 10 teams exist
             schedule=schedule,
+            market_weight=1.0,
         )
 
 
@@ -159,7 +161,7 @@ def test_draft_picks_threads_market_weight_and_changes_the_pick():
                           "is_home": False, "elo_win_probability": 1.0 - home_prob})
     elo_games = pd.DataFrame(elo_rows)
 
-    market_picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule)
+    market_picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule, market_weight=1.0)
     assert market_picks[0].team == "KC"
 
     blended_picks = do.draft_picks(
@@ -187,7 +189,7 @@ def _home_override_schedule():
 
 def test_pick_2_forces_best_home_game_when_pick_1_is_away():
     schedule = _home_override_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     pick1, pick2 = picks[0], picks[1]
 
     assert pick1.team == "AWAYFAV" and pick1.is_home is False
@@ -197,7 +199,7 @@ def test_pick_2_forces_best_home_game_when_pick_1_is_away():
 
 def test_pick_4_forces_best_home_game_when_pick_3_is_away():
     schedule = _home_override_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     pick3, pick4 = picks[2], picks[3]
 
     # Entry A already drafted AWAYFAV and HOMEFAV, so Entry B's best
@@ -212,7 +214,7 @@ def test_no_home_override_when_pick_1_is_already_home():
     # home game, so pick #2 should follow the normal (unconstrained)
     # recommendation logic -- no override language in its reasoning.
     schedule = _basic_week_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule)
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
     assert picks[0].is_home is True
     assert "Home-game override" not in picks[1].reasoning
 
@@ -224,7 +226,8 @@ def test_home_override_falls_back_to_normal_pick_when_no_home_game_remains():
     # pick #2 -- it must fall back to the normal recommendation instead of
     # raising.
     picks = do.draft_picks(
-        SEASON, 1, used_teams_a={"WEAK1", "HOMEFAV", "WEAK3"}, used_teams_b=set(), rounds=2, schedule=schedule
+        SEASON, 1, used_teams_a={"WEAK1", "HOMEFAV", "WEAK3"}, used_teams_b=set(), rounds=2, schedule=schedule,
+        market_weight=1.0,
     )
     pick1, pick2 = picks[0], picks[1]
 
@@ -246,13 +249,13 @@ def test_draft_picks_threads_team_bias_games():
         ]
     )
 
-    market_picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule)
+    market_picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule, market_weight=1.0)
     assert market_picks[0].team == "KC"
     assert market_picks[0].team_bias_adjustment == 0.0
 
     biased_picks = do.draft_picks(
         SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule,
-        team_bias_games=bias_games,
+        team_bias_games=bias_games, market_weight=1.0,
     )
     kc_pick = next((p for p in biased_picks if p.team == "KC"), None)
     if kc_pick is not None:

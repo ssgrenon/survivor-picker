@@ -65,7 +65,7 @@ def _week_schedule():
 
 def test_build_candidates_excludes_used_teams():
     schedule = _week_schedule()
-    candidates = strat.build_candidates(SEASON, 5, used_teams={"DEN"}, schedule=schedule)
+    candidates = strat.build_candidates(SEASON, 5, used_teams={"DEN"}, schedule=schedule, market_weight=1.0)
     teams = {c.team for c in candidates}
     assert "DEN" not in teams
     assert {"KC", "SF", "SEA"} <= teams
@@ -158,7 +158,7 @@ def test_recommend_pick_end_to_end_holds_team_for_better_matchup():
             },
         ]
     )
-    rec = strat.recommend_pick(SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=2)
+    rec = strat.recommend_pick(SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=2, market_weight=1.0)
 
     assert rec.entry == "A"
     assert rec.week == 1
@@ -238,10 +238,14 @@ def test_build_candidates_and_recommend_pick_thread_team_bias_games():
         ]
     )
 
-    candidates = strat.build_candidates(SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games)
+    candidates = strat.build_candidates(
+        SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+    )
     kc = next(c for c in candidates if c.team == "KC")
     assert kc.team_bias_adjustment < 0
 
-    rec = strat.recommend_pick(SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games)
+    rec = strat.recommend_pick(
+        SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+    )
     kc_available = next(c for c in rec.available if c.team == "KC")
     assert kc_available.team_bias_adjustment == kc.team_bias_adjustment

@@ -63,7 +63,7 @@ def _draft_pick_for_entry(
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
     lookahead_weeks: int,
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> DraftPick:
@@ -160,7 +160,7 @@ def _draft_best_home_pick_for_entry(
     drafted_so_far: Set[str],
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Optional[DraftPick]:
@@ -214,7 +214,7 @@ def draft_picks(
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
-    market_weight: float = 1.0,
+    market_weight: float = 0.75,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[DraftPick]:
