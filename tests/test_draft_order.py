@@ -231,3 +231,31 @@ def test_home_override_falls_back_to_normal_pick_when_no_home_game_remains():
     assert pick1.team == "AWAYFAV" and pick1.is_home is False
     assert pick2.team == "AWAYFAV2"  # only team left for A once home teams are excluded
     assert "Home-game override" not in pick2.reasoning
+
+
+def test_draft_picks_threads_team_bias_games():
+    schedule = _basic_week_schedule()
+    # KC (~90% market favorite) has a consistent losing history at home in
+    # this synthetic bias table -- strong enough to knock it off pick #1.
+    bias_games = pd.DataFrame(
+        [
+            {"season": season, "week": 1, "home_team": "KC", "away_team": "OPP",
+             "home_score": 10, "away_score": 30, "home_moneyline": -900, "away_moneyline": 650,
+             "spread_line": 15.0}
+            for season in (2018, 2019, 2020, 2021, 2022)
+        ]
+    )
+
+    market_picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule)
+    assert market_picks[0].team == "KC"
+    assert market_picks[0].team_bias_adjustment == 0.0
+
+    biased_picks = do.draft_picks(
+        SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule,
+        team_bias_games=bias_games,
+    )
+    kc_pick = next((p for p in biased_picks if p.team == "KC"), None)
+    if kc_pick is not None:
+        assert kc_pick.team_bias_adjustment < 0
+    else:
+        assert biased_picks[0].team != "KC"  # bias was strong enough to change pick #1

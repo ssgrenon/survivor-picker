@@ -47,7 +47,10 @@ from strategy import entry_b_hedge  # noqa: E402
 
 st.set_page_config(page_title="Survivor Picker", layout="wide")
 
-ROW_COLUMNS = ["Suggestion", "Pick", "Win Prob", "Spread", "Score", "Result", "Match/Override", "Model Divergence"]
+ROW_COLUMNS = [
+    "Suggestion", "Pick", "Win Prob", "Spread", "Score", "Result", "Match/Override",
+    "Model Divergence", "Team Bias",
+]
 
 # Market/Elo blend options offered in the UI, in market_weight order (see
 # models.win_prob.get_win_probability). Label -> market_weight.
@@ -113,6 +116,29 @@ def _divergence_badge(divergence: Optional[float]) -> str:
     return f' <span style="{style}">(model divergence {divergence:+.1f})</span>'
 
 
+_TEAM_BIAS_COLOR = "#6639ba"
+
+
+def _team_bias_badge(team_bias_adjustment: Optional[float], is_home: Optional[bool]) -> str:
+    """Inline-styled HTML span showing a team's historical market-calibration bias.
+
+    Returns "" whenever there's nothing to show (no adjustment applied, or
+    an exact 0.0 -- functionally indistinguishable from "not computed" for
+    display purposes), so callers can splice this into an f-string
+    unconditionally. Requires the containing st.markdown call to pass
+    unsafe_allow_html=True.
+    """
+    if team_bias_adjustment is None or (isinstance(team_bias_adjustment, float) and pd.isna(team_bias_adjustment)):
+        return ""
+    if team_bias_adjustment == 0.0:
+        return ""
+    context = "home" if is_home else "away"
+    return (
+        f' <span style="color: {_TEAM_BIAS_COLOR}; font-weight: 600;">'
+        f"({team_bias_adjustment:+.1%} historical {context} bias)</span>"
+    )
+
+
 @st.cache_data(show_spinner=False)
 def _available_seasons():
     return nc.get_available_seasons()
@@ -133,6 +159,12 @@ def _get_elo_games() -> pd.DataFrame:
     return nfelo_client.load_nfelo_games()
 
 
+@st.cache_data(show_spinner="Loading historical team performance...")
+def _get_team_bias_games() -> pd.DataFrame:
+    """Full historical nflverse games table, used for team_bias_adjustment (see models.win_prob)."""
+    return nc.load_games()
+
+
 @dataclass(frozen=True)
 class WeeklyRecommendation:
     """One entry's suggested pick for one week, plus its full available pool."""
@@ -146,6 +178,7 @@ class WeeklyRecommendation:
     available: List[entry_b_hedge.TeamCandidate]
     projected_path: Optional[Sequence[dp_optimizer.WeekPick]] = None
     divergence: Optional[float] = None
+    team_bias_adjustment: float = 0.0
 
 
 def get_entry_recommendation(
@@ -159,20 +192,21 @@ def get_entry_recommendation(
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Optional[WeeklyRecommendation]:
     """Recommend a pick for `entry` ("A" or "B"), excluding `exclude_teams` from the pool.
 
     `exclude_teams` is how Entry B is kept off whatever team Entry A picked
     this week -- Entry A itself is never called with an exclusion, since it
     always picks independently and has priority. `lookahead_weeks` (N) only
-    affects Entry A's DP optimizer. `market_weight` / `elo_games`: see
-    `models.win_prob.get_win_probability`.
+    affects Entry A's DP optimizer. `market_weight` / `elo_games` /
+    `team_bias_games`: see `models.win_prob.get_win_probability`.
     """
     projected_path = None
     if entry == "A":
         raw_available = entry_a_value.build_candidates(
             season, week, used_teams, schedule=schedule, spread_model=spread_model,
-            market_weight=market_weight, elo_games=elo_games,
+            market_weight=market_weight, elo_games=elo_games, team_bias_games=team_bias_games,
         )
         available = [c for c in raw_available if c.team not in exclude_teams]
         if not available:
@@ -187,6 +221,7 @@ def get_entry_recommendation(
                 lookahead_weeks=lookahead_weeks,
                 market_weight=market_weight,
                 elo_games=elo_games,
+                team_bias_games=team_bias_games,
             )
         except ValueError:
             rec = None
@@ -203,7 +238,7 @@ def get_entry_recommendation(
     else:
         raw_available = entry_b_hedge.build_candidates(
             season, week, used_teams, schedule=schedule, spread_model=spread_model,
-            market_weight=market_weight, elo_games=elo_games,
+            market_weight=market_weight, elo_games=elo_games, team_bias_games=team_bias_games,
         )
         available = [c for c in raw_available if c.team not in exclude_teams]
         if not available:
@@ -229,6 +264,7 @@ def get_entry_recommendation(
         available=available,
         projected_path=projected_path,
         divergence=top.divergence,
+        team_bias_adjustment=top.team_bias_adjustment,
     )
 
 
@@ -267,7 +303,8 @@ def _render_pick_line(pick: draft_order.DraftPick) -> None:
     matchup = _matchup_display(pick.team, pick.opponent, pick.is_home, bold_team=True)
     st.markdown(
         f"**Pick #{pick.pick_number} ({_ALGORITHM_NAME[pick.entry]}):** {matchup} "
-        f"— {pick.win_probability:.1%}{spread_text}{_divergence_badge(pick.divergence)}",
+        f"— {pick.win_probability:.1%}{spread_text}{_divergence_badge(pick.divergence)}"
+        f"{_team_bias_badge(pick.team_bias_adjustment, pick.is_home)}",
         unsafe_allow_html=True,
     )
     st.caption(pick.reasoning)
@@ -300,7 +337,8 @@ def _render_entry_column(
     matchup = _matchup_display(recommendation.team, recommendation.opponent, recommendation.is_home, bold_team=True)
     st.markdown(
         f"**Recommends:** {matchup} — {recommendation.win_probability:.1%}{spread_text}"
-        f"{_divergence_badge(recommendation.divergence)}",
+        f"{_divergence_badge(recommendation.divergence)}"
+        f"{_team_bias_badge(recommendation.team_bias_adjustment, recommendation.is_home)}",
         unsafe_allow_html=True,
     )
     st.caption(recommendation.reasoning)
@@ -364,15 +402,25 @@ def _style_log_table(df: pd.DataFrame):
         color = _divergence_color_hex(value)
         return f"color: {color}; font-weight: 600;" if color else ""
 
+    def _fmt_team_bias(v):
+        return f"{v:+.1%}" if isinstance(v, (int, float)) and pd.notna(v) and v != 0.0 else "—"
+
+    def _color_team_bias(value):
+        if not isinstance(value, (int, float)) or pd.isna(value) or value == 0.0:
+            return ""
+        return f"color: {_TEAM_BIAS_COLOR}; font-weight: 600;"
+
     result_cols = [c for c in df.columns if c.endswith("Result")]
     flag_cols = [c for c in df.columns if c.endswith("Match/Override")]
     win_prob_cols = [c for c in df.columns if c.endswith("Win Prob")]
     spread_cols = [c for c in df.columns if c.endswith("Spread")]
     divergence_cols = [c for c in df.columns if c.endswith("Model Divergence")]
+    team_bias_cols = [c for c in df.columns if c.endswith("Team Bias")]
 
     format_map = {c: _fmt_pct for c in win_prob_cols}
     format_map.update({c: _fmt_spread for c in spread_cols})
     format_map.update({c: _fmt_divergence for c in divergence_cols})
+    format_map.update({c: _fmt_team_bias for c in team_bias_cols})
 
     styler = df.style
     if result_cols:
@@ -381,6 +429,8 @@ def _style_log_table(df: pd.DataFrame):
         styler = styler.map(_color_flag, subset=flag_cols)
     if divergence_cols:
         styler = styler.map(_color_divergence, subset=divergence_cols)
+    if team_bias_cols:
+        styler = styler.map(_color_team_bias, subset=team_bias_cols)
     if format_map:
         styler = styler.format(format_map)
     return styler
@@ -443,6 +493,7 @@ def main() -> None:
     schedule = _load_schedule(season)
     spread_model = _get_spread_model()
     elo_games = _get_elo_games() if market_weight < 1.0 else None
+    team_bias_games = _get_team_bias_games()
     max_week = int(schedule["week"].max())
 
     st.divider()
@@ -481,6 +532,7 @@ def main() -> None:
                     lookahead_weeks=lookahead_weeks,
                     market_weight=market_weight,
                     elo_games=elo_games,
+                    team_bias_games=team_bias_games,
                 )
             except ValueError:
                 draft = []
@@ -506,6 +558,7 @@ def main() -> None:
                 lookahead_weeks=lookahead_weeks,
                 market_weight=market_weight,
                 elo_games=elo_games,
+                team_bias_games=team_bias_games,
             )
         )
         # Key includes lookahead_weeks and weight_label so the widget resets
@@ -539,6 +592,7 @@ def main() -> None:
                 exclude_teams=exclude_for_b,
                 market_weight=market_weight,
                 elo_games=elo_games,
+                team_bias_games=team_bias_games,
             )
         )
         with col_b:
@@ -589,6 +643,7 @@ def main() -> None:
                             "A: Result": outcome_a,
                             "A: Match/Override": "Match" if selected_a == rec_a.team else "Override",
                             "A: Model Divergence": cand_a.divergence,
+                            "A: Team Bias": cand_a.team_bias_adjustment,
                         }
                     )
                     if outcome_a == "LOSS":
@@ -613,6 +668,7 @@ def main() -> None:
                             "B: Result": outcome_b,
                             "B: Match/Override": "Match" if selected_b == rec_b.team else "Override",
                             "B: Model Divergence": cand_b.divergence,
+                            "B: Team Bias": cand_b.team_bias_adjustment,
                         }
                     )
                     if outcome_b == "LOSS":

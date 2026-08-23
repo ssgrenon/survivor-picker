@@ -264,3 +264,152 @@ def test_divergence_is_none_without_elo_games():
     assert result.elo_spread is None
     assert result.divergence is None
     assert result.market_spread is not None
+
+
+# ---------------------------------------------------------------------------
+# compute_team_bias / get_team_bias / team_bias_adjustment
+# ---------------------------------------------------------------------------
+
+
+def _bias_row(season, home_team, away_team, home_score, away_score, home_ml=-150, away_ml=130, spread=3.0):
+    return {
+        "season": season,
+        "week": 1,
+        "home_team": home_team,
+        "away_team": away_team,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_moneyline": home_ml,
+        "away_moneyline": away_ml,
+        "spread_line": spread,
+    }
+
+
+def test_compute_team_bias_matches_hand_calculation():
+    # TEST is priced as a 58% home favorite (moneyline -150) but wins
+    # outright every time across three seasons -- a consistent positive
+    # residual that recency-weighting and shrinkage should only partially
+    # erode, matching a hand-computed expected value exactly.
+    games = pd.DataFrame(
+        [_bias_row(season, "TEST", "OPP", 20, 10) for season in (2020, 2021, 2022)]
+    )
+    decay, k, max_adj = 0.85, 15.0, 0.10  # high cap so the true shrunk value isn't clipped
+
+    home_prob, _ = wp.devig_moneylines(-150, 130)
+    residual = 1.0 - home_prob
+    weights = [decay ** (2022 - s) for s in (2020, 2021, 2022)]
+    expected_avg = sum(w * residual for w in weights) / sum(weights)
+    expected = expected_avg * (sum(weights) / (sum(weights) + k))
+
+    got = wp.compute_team_bias("TEST", True, games, decay_per_season=decay, shrinkage_k=k, max_adjustment=max_adj)
+    assert got == pytest.approx(expected)
+    assert got > 0  # market undersold TEST relative to its actual results
+
+
+def test_compute_team_bias_caps_at_max_adjustment():
+    # An extreme, long, undiluted run of upsets should hit the cap.
+    games = pd.DataFrame(
+        [_bias_row(season, "TEST", "OPP", 20, 10, home_ml=200, away_ml=-260) for season in range(2015, 2023)]
+    )
+    got = wp.compute_team_bias("TEST", True, games, max_adjustment=0.04)
+    assert got == pytest.approx(0.04)
+
+
+def test_compute_team_bias_is_negative_when_team_underperforms_market():
+    games = pd.DataFrame(
+        [_bias_row(season, "OPP", "TEST", 20, 10) for season in (2020, 2021, 2022)]
+    )  # TEST (away, priced ~42%) loses every time -- market was still too generous
+    got = wp.compute_team_bias("TEST", False, games, max_adjustment=0.10)
+    assert got < 0
+
+
+def test_compute_team_bias_shrinks_small_samples_toward_zero():
+    # One game's raw residual is large, but shrinkage (k=15) should pull a
+    # single-game sample (n≈1) most of the way back to zero.
+    games = pd.DataFrame([_bias_row(2022, "TEST", "OPP", 20, 10)])
+    got = wp.compute_team_bias("TEST", True, games, shrinkage_k=15.0, max_adjustment=1.0)
+    home_prob, _ = wp.devig_moneylines(-150, 130)
+    raw_residual = 1.0 - home_prob
+    assert 0 < got < raw_residual * 0.2  # heavily shrunk relative to the raw residual
+
+
+def test_compute_team_bias_excludes_ties():
+    games = pd.DataFrame([_bias_row(2022, "TEST", "OPP", 20, 20)])  # tie
+    assert wp.compute_team_bias("TEST", True, games) == 0.0
+
+
+def test_compute_team_bias_returns_zero_for_unknown_team():
+    games = pd.DataFrame([_bias_row(2022, "OTHER", "OPP", 20, 10)])
+    assert wp.compute_team_bias("TEST", True, games) == 0.0
+
+
+def test_compute_team_bias_skips_games_with_no_market_data():
+    row = _bias_row(2022, "TEST", "OPP", 20, 10)
+    row["home_moneyline"] = None
+    row["away_moneyline"] = None
+    row["spread_line"] = None
+    games = pd.DataFrame([row])
+    assert wp.compute_team_bias("TEST", True, games) == 0.0
+
+
+def test_get_team_bias_caches_and_recomputes_only_when_stale():
+    games = pd.DataFrame([_bias_row(2022, "TEST", "OPP", 20, 10)])
+    calls = {"count": 0}
+    real_compute = wp.compute_team_bias
+
+    def _spy(*args, **kwargs):
+        calls["count"] += 1
+        return real_compute(*args, **kwargs)
+
+    import unittest.mock as mock
+
+    with mock.patch.object(wp, "compute_team_bias", side_effect=_spy):
+        first = wp.get_team_bias("TEST", True, games, force_refresh=True)
+        second = wp.get_team_bias("TEST", True, games)
+        assert calls["count"] == 1  # second call served from cache
+        assert first == second
+
+        # A different games_df object invalidates the cache even though
+        # the content is identical -- avoids cross-test/cross-caller bleed.
+        other_games = pd.DataFrame([_bias_row(2022, "TEST", "OPP", 20, 10)])
+        wp.get_team_bias("TEST", True, other_games)
+        assert calls["count"] == 2
+
+
+def test_get_win_probability_applies_team_bias_as_final_step():
+    game = {**GAME_WITH_ID, "spread_line": None}  # force moneyline pricing
+    bias_games = pd.DataFrame(
+        [_bias_row(season, "KC", "OPP", 20, 10) for season in (2020, 2021, 2022)]
+    )
+    without_bias = wp.get_win_probability(game, "KC")
+    with_bias = wp.get_win_probability(game, "KC", team_bias_games=bias_games, team_bias_max_adjustment=0.10)
+
+    assert with_bias.team_bias_adjustment > 0
+    assert with_bias.win_probability == pytest.approx(
+        without_bias.win_probability + with_bias.team_bias_adjustment
+    )
+
+
+def test_get_win_probability_team_bias_defaults_to_zero_when_not_supplied():
+    result = wp.get_win_probability(GAME_WITH_ID, "KC")
+    assert result.team_bias_adjustment == 0.0
+
+
+def test_get_win_probability_clamps_final_probability_to_valid_range():
+    # An extreme, unclamped market probability plus the max positive bias
+    # must still land inside [0.01, 0.99].
+    game = {
+        "game_id": "2023_01_DET_KC",
+        "season": 2023,
+        "week": 1,
+        "home_team": "KC",
+        "away_team": "DET",
+        "spread_line": None,
+        "home_moneyline": -100000,
+        "away_moneyline": 100000,
+    }
+    bias_games = pd.DataFrame(
+        [_bias_row(season, "KC", "OPP", 20, 10) for season in (2020, 2021, 2022)]
+    )
+    result = wp.get_win_probability(game, "KC", team_bias_games=bias_games)
+    assert 0.01 <= result.win_probability <= 0.99

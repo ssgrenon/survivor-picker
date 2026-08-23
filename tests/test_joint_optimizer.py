@@ -135,3 +135,21 @@ def test_recommend_joint_pick_threads_market_weight():
     )
     kc_prob = rec.win_probability_a if rec.pick_a == "KC" else rec.win_probability_b
     assert kc_prob == pytest.approx(0.99)
+
+
+def test_recommend_joint_pick_threads_team_bias_games():
+    schedule = _week_schedule()
+    bias_games = pd.DataFrame(
+        [{"season": season, "week": 1, "home_team": "KC", "away_team": "OPP",
+          "home_score": 10, "away_score": 24, "home_moneyline": -1000, "away_moneyline": 700,
+          "spread_line": 15.0}
+         for season in (2018, 2019, 2020, 2021, 2022)]
+    )
+    rec = jo.recommend_joint_pick(
+        2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule, team_bias_games=bias_games
+    )
+    kc_prob = rec.win_probability_a if rec.pick_a == "KC" else (
+        rec.win_probability_b if rec.pick_b == "KC" else None
+    )
+    if kc_prob is not None:
+        assert kc_prob < 1000 / (1000 + 100)  # below KC's raw devigged market probability

@@ -47,6 +47,7 @@ class WeekRecord:
     outcome: str  # "WIN" | "LOSS" (a tie is scored as a WIN, see score_pick)
     still_alive: bool
     model_divergence: Optional[float] = None
+    team_bias_adjustment: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ def simulate(
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
     """Run `algorithm` through `season` starting at `starting_week` until it's eliminated.
 
@@ -118,9 +120,9 @@ def simulate(
             re-downloading across repeated/compared runs.
         initial_used_teams: Teams to treat as already spent before
             `starting_week` (e.g. picks made earlier in the real season).
-        market_weight / elo_games: see `models.win_prob.get_win_probability`.
-            Used to build the `available` candidate pool handed to
-            `algorithm` each week.
+        market_weight / elo_games / team_bias_games: see
+            `models.win_prob.get_win_probability`. Used to build the
+            `available` candidate pool handed to `algorithm` each week.
     """
     if algorithm_name is None:
         algorithm_name = getattr(algorithm, "__name__", "algorithm")
@@ -147,6 +149,7 @@ def simulate(
                 spread_model=spread_model,
                 market_weight=market_weight,
                 elo_games=elo_games,
+                team_bias_games=team_bias_games,
             )
         except ValueError:
             continue  # no games at all this week (schedule gap) -- nothing to pick
@@ -185,6 +188,7 @@ def simulate(
                 outcome=outcome,
                 still_alive=not eliminated,
                 model_divergence=candidate.divergence,
+                team_bias_adjustment=candidate.team_bias_adjustment,
             )
         )
 
@@ -216,6 +220,7 @@ def compare_algorithms(
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Dict[str, BacktestResult]:
     """Run several algorithms through the same season/week for side-by-side comparison."""
     if schedule is None:
@@ -232,6 +237,7 @@ def compare_algorithms(
             spread_model=spread_model,
             market_weight=market_weight,
             elo_games=elo_games,
+            team_bias_games=team_bias_games,
         )
         for name, algorithm in algorithms.items()
     }
@@ -257,6 +263,7 @@ def make_entry_a_algorithm(
     spread_model: Optional[wp.SpreadModel] = None,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> PickAlgorithm:
     """Build an algorithm replicating Entry A's DP-optimized strategy."""
 
@@ -278,6 +285,7 @@ def make_entry_a_algorithm(
             spread_model=spread_model,
             market_weight=market_weight,
             elo_games=elo_games,
+            team_bias_games=team_bias_games,
         ).team
 
     return _pick

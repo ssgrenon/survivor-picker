@@ -49,6 +49,7 @@ class DraftPick:
     spread_line: Optional[float]
     reasoning: str
     divergence: Optional[float] = None
+    team_bias_adjustment: float = 0.0
 
 
 def _draft_pick_for_entry(
@@ -64,6 +65,7 @@ def _draft_pick_for_entry(
     lookahead_weeks: int,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> DraftPick:
     """Compute one entry's next pick, treating already-drafted teams as unavailable.
 
@@ -85,6 +87,7 @@ def _draft_pick_for_entry(
                 lookahead_weeks=lookahead_weeks,
                 market_weight=market_weight,
                 elo_games=elo_games,
+                team_bias_games=team_bias_games,
             )
             top = rec.projected_path[0]
             reasoning = rec.reasoning
@@ -101,6 +104,7 @@ def _draft_pick_for_entry(
                 spread_model=spread_model,
                 market_weight=market_weight,
                 elo_games=elo_games,
+                team_bias_games=team_bias_games,
             )
             top = rec.ranked_picks[0]
             reasoning = rec.reasoning
@@ -117,6 +121,7 @@ def _draft_pick_for_entry(
             spread_model=spread_model,
             market_weight=market_weight,
             elo_games=elo_games,
+            team_bias_games=team_bias_games,
         )
         if not available:
             raise ValueError(
@@ -140,6 +145,7 @@ def _draft_pick_for_entry(
         spread_line=top.spread_line,
         reasoning=reasoning,
         divergence=top.divergence,
+        team_bias_adjustment=top.team_bias_adjustment,
     )
 
 
@@ -156,6 +162,7 @@ def _draft_best_home_pick_for_entry(
     spread_model: Optional[wp.SpreadModel],
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Optional[DraftPick]:
     """The single best remaining home-team candidate for `entry`, or None if none remain.
 
@@ -172,6 +179,7 @@ def _draft_best_home_pick_for_entry(
         spread_model=spread_model,
         market_weight=market_weight,
         elo_games=elo_games,
+        team_bias_games=team_bias_games,
     )
     home_candidates = [c for c in available if c.is_home]
     if not home_candidates:
@@ -193,6 +201,7 @@ def _draft_best_home_pick_for_entry(
             f"({top.win_probability:.1%})."
         ),
         divergence=top.divergence,
+        team_bias_adjustment=top.team_bias_adjustment,
     )
 
 
@@ -207,6 +216,7 @@ def draft_picks(
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
     market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
+    team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[DraftPick]:
     """Draft `rounds` picks for Entry A, then `rounds` picks for Entry B.
 
@@ -224,7 +234,8 @@ def draft_picks(
             DP optimizer (see `models.dp_optimizer`). Entry B's hedge
             strategy doesn't use a lookahead, so this only affects "A"
             picks.
-        market_weight / elo_games: see `models.win_prob.get_win_probability`.
+        market_weight / elo_games / team_bias_games: see
+            `models.win_prob.get_win_probability`.
 
     Returns:
         A flat list of `rounds * 2` `DraftPick`s in priority order:
@@ -259,6 +270,7 @@ def draft_picks(
                     spread_model,
                     market_weight=market_weight,
                     elo_games=elo_games,
+                    team_bias_games=team_bias_games,
                 )
             if pick is None:
                 pick = _draft_pick_for_entry(
@@ -274,6 +286,7 @@ def draft_picks(
                     lookahead_weeks,
                     market_weight=market_weight,
                     elo_games=elo_games,
+                    team_bias_games=team_bias_games,
                 )
 
             picks.append(pick)
