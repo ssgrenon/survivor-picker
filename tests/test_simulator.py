@@ -41,9 +41,7 @@ def test_simulate_survives_full_season():
         ]
     )
     algorithm = _scripted_algorithm({1: "KC", 2: "SF", 3: "BUF"})
-    result = sim.simulate(
-        SEASON, 1, algorithm, algorithm_name="picks_kc_sf_buf", schedule=schedule, market_weight=1.0
-    )
+    result = sim.simulate(SEASON, 1, algorithm, algorithm_name="picks_kc_sf_buf", schedule=schedule)
 
     assert result.stop_reason == "survived_full_season"
     assert result.survived_full_season is True
@@ -64,7 +62,7 @@ def test_simulate_eliminated_on_loss_stops_advancing():
         ]
     )
     algorithm = _scripted_algorithm({1: "KC", 2: "SF", 3: "BUF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0)
+    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
 
     assert result.stop_reason == "eliminated"
     assert result.eliminated_week == 2
@@ -84,7 +82,7 @@ def test_simulate_tie_counts_as_a_win_and_does_not_eliminate():
         ]
     )
     algorithm = _scripted_algorithm({1: "KC", 2: "SF", 3: "BUF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0)
+    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
 
     assert result.eliminated_week is None
     assert [r.week for r in result.records] == [1, 2, 3]
@@ -103,7 +101,7 @@ def test_simulate_stops_on_unplayed_game():
         ]
     )
     algorithm = _scripted_algorithm({1: "KC", 2: "SF"})
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0)
+    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
 
     assert result.stop_reason == "hit_unplayed_game"
     assert [r.week for r in result.records] == [1]
@@ -115,19 +113,19 @@ def test_simulate_raises_when_algorithm_picks_unavailable_team():
     schedule = _schedule([_row(1, "KC", "DEN", 30, 10)])
     algorithm = _scripted_algorithm({1: "SF"})  # SF isn't playing this week
     with pytest.raises(ValueError):
-        sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0)
+        sim.simulate(SEASON, 1, algorithm, schedule=schedule)
 
 
 def test_simulate_respects_initial_used_teams():
     schedule = _schedule([_row(1, "KC", "DEN", 30, 10)])
     algorithm = sim.highest_win_probability_algorithm
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, initial_used_teams={"KC"}, market_weight=1.0)
+    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, initial_used_teams={"KC"})
     assert result.records[0].pick == "DEN"
 
 
 def test_highest_win_probability_algorithm_picks_the_favorite():
     schedule = _schedule([_row(1, "KC", "DEN", home_ml=-400, away_ml=320)])
-    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule, market_weight=1.0)
+    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule)
     pick = sim.highest_win_probability_algorithm(SEASON, 1, set(), available)
     assert pick == "KC"
 
@@ -140,7 +138,7 @@ def test_highest_win_probability_algorithm_raises_on_empty_available():
 def test_make_entry_b_algorithm_respects_floor():
     schedule = _schedule([_row(1, "KC", "DEN", home_ml=110, away_ml=-130)])  # KC underdog, below floor
     algorithm = sim.make_entry_b_algorithm(min_win_probability=0.65)
-    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule, market_weight=1.0)
+    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule)
     with pytest.raises(ValueError):
         algorithm(SEASON, 1, set(), available)
 
@@ -152,8 +150,8 @@ def test_make_entry_a_algorithm_returns_available_team():
             _row(2, "KC", "LV", home_ml=-900, away_ml=650),  # much better future matchup
         ]
     )
-    algorithm = sim.make_entry_a_algorithm(schedule=schedule, market_weight=1.0)
-    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule, market_weight=1.0)
+    algorithm = sim.make_entry_a_algorithm(schedule=schedule)
+    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule)
     pick = algorithm(SEASON, 1, set(), available)
     assert pick in {c.team for c in available}
 
@@ -201,7 +199,7 @@ def test_simulate_carries_model_divergence_into_week_records():
     )
     algorithm = _scripted_algorithm({1: "KC"})
 
-    without_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0)
+    without_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
     assert without_elo.records[0].model_divergence is None
 
     with_elo = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0, elo_games=elo_games)
@@ -232,9 +230,9 @@ def test_make_entry_a_algorithm_threads_market_weight():
              "is_home": False, "elo_win_probability": 0.05},
         ]
     )
-    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule, market_weight=1.0)
+    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule)
 
-    market_algorithm = sim.make_entry_a_algorithm(schedule=schedule, market_weight=1.0)
+    market_algorithm = sim.make_entry_a_algorithm(schedule=schedule)
     assert market_algorithm(SEASON, 1, set(), available) == "KC"
 
     blended_algorithm = sim.make_entry_a_algorithm(schedule=schedule, market_weight=0.0, elo_games=elo_games)
@@ -251,7 +249,6 @@ def test_compare_algorithms_runs_each_and_keys_by_name():
             "always_den": _scripted_algorithm({1: "DEN"}),
         },
         schedule=schedule,
-        market_weight=1.0,
     )
     assert set(results.keys()) == {"baseline", "always_den"}
     assert results["baseline"].records[0].pick == "KC"
@@ -269,10 +266,8 @@ def test_simulate_carries_team_bias_adjustment_into_week_records():
     )
     algorithm = _scripted_algorithm({1: "KC"})
 
-    without_bias = sim.simulate(SEASON, 1, algorithm, schedule=schedule, market_weight=1.0)
+    without_bias = sim.simulate(SEASON, 1, algorithm, schedule=schedule)
     assert without_bias.records[0].team_bias_adjustment == 0.0
 
-    with_bias = sim.simulate(
-        SEASON, 1, algorithm, schedule=schedule, team_bias_games=bias_games, market_weight=1.0
-    )
+    with_bias = sim.simulate(SEASON, 1, algorithm, schedule=schedule, team_bias_games=bias_games)
     assert with_bias.records[0].team_bias_adjustment < 0

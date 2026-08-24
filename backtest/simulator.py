@@ -105,7 +105,7 @@ def simulate(
     schedule: Optional[pd.DataFrame] = None,
     initial_used_teams: Optional[Iterable[str]] = None,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 0.75,
+    market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> BacktestResult:
@@ -218,7 +218,7 @@ def compare_algorithms(
     schedule: Optional[pd.DataFrame] = None,
     initial_used_teams: Optional[Iterable[str]] = None,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 0.75,
+    market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Dict[str, BacktestResult]:
@@ -261,7 +261,7 @@ def make_entry_a_algorithm(
     per_week_top_k: int = dp_optimizer.DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = dp_optimizer.DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 0.75,
+    market_weight: float = 1.0,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> PickAlgorithm:

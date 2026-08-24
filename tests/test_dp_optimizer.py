@@ -147,9 +147,7 @@ def _holding_schedule():
 
 def test_optimize_pick_sequence_holds_team_end_to_end():
     schedule = _holding_schedule()
-    result = dpo.optimize_pick_sequence(
-        SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=2, market_weight=1.0
-    )
+    result = dpo.optimize_pick_sequence(SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=2)
 
     assert result.recommended_pick == "Y"
     assert [p.team for p in result.path] == ["Y", "X"]
@@ -159,17 +157,13 @@ def test_optimize_pick_sequence_holds_team_end_to_end():
 
 def test_optimize_pick_sequence_excludes_used_teams():
     schedule = _holding_schedule()
-    result = dpo.optimize_pick_sequence(
-        SEASON, 1, used_teams={"Y"}, schedule=schedule, lookahead_weeks=2, market_weight=1.0
-    )
+    result = dpo.optimize_pick_sequence(SEASON, 1, used_teams={"Y"}, schedule=schedule, lookahead_weeks=2)
     assert "Y" not in [p.team for p in result.path]
 
 
 def test_optimize_pick_sequence_truncates_at_season_end():
     schedule = _holding_schedule()  # only weeks 1-2 exist
-    result = dpo.optimize_pick_sequence(
-        SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=7, market_weight=1.0
-    )
+    result = dpo.optimize_pick_sequence(SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=7)
     assert max(p.week for p in result.path) == 2
 
 
@@ -235,8 +229,7 @@ def test_optimize_pick_sequence_carries_team_bias_adjustment_through():
     )
 
     result = dpo.optimize_pick_sequence(
-        SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=1,
-        market_weight=1.0, team_bias_games=bias_games,
+        SEASON, 1, used_teams=set(), schedule=schedule, lookahead_weeks=1, team_bias_games=bias_games
     )
     top = result.path[0]
     assert top.team == "X"
