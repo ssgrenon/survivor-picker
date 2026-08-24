@@ -387,7 +387,7 @@ class WinProbabilityResult:
 def get_win_probability(
     game_row: Mapping[str, Any],
     team: str,
-    market_weight: float = 1.0,
+    market_weight: float = 0.5,
     spread_model: Optional[SpreadModel] = None,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,

@@ -87,7 +87,9 @@ def _week_schedule():
 
 def test_recommend_joint_pick_end_to_end():
     schedule = _week_schedule()
-    rec = jo.recommend_joint_pick(2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule)
+    rec = jo.recommend_joint_pick(
+        2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule, market_weight=1.0
+    )
 
     assert rec.pick_a != rec.pick_b
     # picks must not be opposing sides of the same game
@@ -113,7 +115,7 @@ def test_recommend_joint_pick_raises_when_no_valid_pairing():
 def test_recommend_joint_pick_respects_used_teams_per_entry():
     schedule = _week_schedule()
     rec = jo.recommend_joint_pick(
-        2026, 5, used_teams_a={"KC"}, used_teams_b=set(), schedule=schedule
+        2026, 5, used_teams_a={"KC"}, used_teams_b=set(), schedule=schedule, market_weight=1.0
     )
     assert rec.pick_a != "KC"
 
@@ -146,7 +148,8 @@ def test_recommend_joint_pick_threads_team_bias_games():
          for season in (2018, 2019, 2020, 2021, 2022)]
     )
     rec = jo.recommend_joint_pick(
-        2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule, team_bias_games=bias_games
+        2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule,
+        market_weight=1.0, team_bias_games=bias_games,
     )
     kc_prob = rec.win_probability_a if rec.pick_a == "KC" else (
         rec.win_probability_b if rec.pick_b == "KC" else None

@@ -3,7 +3,7 @@
 Replaces the old decaying-lookahead "future value" heuristic
 (`models.future_value`) with an (approximately) exact optimizer: given
 the current used-teams state, it searches for the sequence of distinct
-teams across the next `lookahead_weeks` (default 7) that maximizes the
+teams across the next `lookahead_weeks` (default 2) that maximizes the
 *product* of win probabilities -- i.e. the probability of surviving the
 whole window -- rather than scoring each team's hold-vs-spend tradeoff
 in isolation.
@@ -33,7 +33,7 @@ from data import nflverse_client
 from models import win_prob as wp
 
 # How many weeks ahead (including the current week) to plan over.
-DEFAULT_LOOKAHEAD_WEEKS = 7
+DEFAULT_LOOKAHEAD_WEEKS = 2
 
 # How many of a week's highest win-probability teams are even considered
 # as candidates for that week, before the cross-week universe cap.
@@ -81,7 +81,7 @@ def _week_candidates(
     excluded_teams: Set[str],
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
-    market_weight: float = 1.0,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[WeekPick]:
@@ -201,7 +201,7 @@ def optimize_pick_sequence(
     per_week_top_k: int = DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 1.0,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> OptimizedSequence:

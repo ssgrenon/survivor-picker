@@ -1,18 +1,20 @@
 """Streamlit app for interactively testing the survivor pool strategies.
 
-Steps through a season week by week for both entries simultaneously:
-Entry A always picks first using its own value-max algorithm (independent
-of Entry B); Entry B then picks the best team from what's left *excluding
+Steps through a season week by week for both entries simultaneously.
+Both entries run the exact same multi-week value-max algorithm (see
+models.dp_optimizer / strategy.entry_a_value), independently, against
+their own separate used-teams history: Entry A always picks first;
+Entry B then picks its own best team from what's left *excluding
 whichever team Entry A just picked*, so the two entries never end up on
-the same team. Once Entry A is eliminated, Entry B is no longer
+the same team. Once one entry is eliminated, the survivor is no longer
 constrained and picks freely on its own.
 
-Each entry's card also shows its own alternate pick (from the A-A-B-B
-draft order, see strategy.draft_order) -- Entry A's pick #2, Entry B's
-pick #4 -- guaranteed distinct from every other pick shown that week.
-Once one entry is eliminated, both algorithms keep drafting from the
-surviving entry's remaining teams, so its card shows all four
-candidates instead of just its own two.
+Each entry's card also shows its own alternate pick (from the round-major
+draft order, see strategy.draft_order) -- Entry A's own round-2 pick,
+Entry B's own round-2 pick -- guaranteed distinct from every other pick
+shown that week. Once one entry is eliminated, the draft keeps allocating
+picks from the surviving entry's remaining teams, so its card shows all
+four candidates instead of just its own two.
 
 Each week you can accept a recommendation or override it from a
 dropdown of that entry's available teams; confirming both locks them in,
@@ -190,69 +192,54 @@ def get_entry_recommendation(
     spread_model: wp.SpreadModel,
     exclude_teams: Set[str] = frozenset(),
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
-    market_weight: float = 1.0,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> Optional[WeeklyRecommendation]:
     """Recommend a pick for `entry` ("A" or "B"), excluding `exclude_teams` from the pool.
 
-    `exclude_teams` is how Entry B is kept off whatever team Entry A picked
-    this week -- Entry A itself is never called with an exclusion, since it
-    always picks independently and has priority. `lookahead_weeks` (N) only
-    affects Entry A's DP optimizer. `market_weight` / `elo_games` /
-    `team_bias_games`: see `models.win_prob.get_win_probability`.
+    Both entries use the identical multi-week value-max algorithm (see
+    `models.dp_optimizer` / `strategy.entry_a_value`), independently,
+    against their own `used_teams` history -- Entry B is not a distinct
+    "hedge" strategy. `exclude_teams` is how Entry B is kept off whatever
+    team Entry A picked this week -- Entry A itself is never called with
+    an exclusion, since it always picks independently and has priority.
+    `lookahead_weeks` (N), `market_weight` / `elo_games` /
+    `team_bias_games`: see `models.dp_optimizer` /
+    `models.win_prob.get_win_probability`.
     """
-    projected_path = None
-    if entry == "A":
-        raw_available = entry_a_value.build_candidates(
-            season, week, used_teams, schedule=schedule, spread_model=spread_model,
-            market_weight=market_weight, elo_games=elo_games, team_bias_games=team_bias_games,
+    raw_available = entry_a_value.build_candidates(
+        season, week, used_teams, schedule=schedule, spread_model=spread_model,
+        market_weight=market_weight, elo_games=elo_games, team_bias_games=team_bias_games,
+    )
+    available = [c for c in raw_available if c.team not in exclude_teams]
+    if not available:
+        return None
+    try:
+        rec = entry_a_value.recommend_pick(
+            season,
+            week,
+            used_teams=used_teams | exclude_teams,
+            schedule=schedule,
+            spread_model=spread_model,
+            lookahead_weeks=lookahead_weeks,
+            market_weight=market_weight,
+            elo_games=elo_games,
+            team_bias_games=team_bias_games,
         )
-        available = [c for c in raw_available if c.team not in exclude_teams]
-        if not available:
-            return None
-        try:
-            rec = entry_a_value.recommend_pick(
-                season,
-                week,
-                used_teams=used_teams,
-                schedule=schedule,
-                spread_model=spread_model,
-                lookahead_weeks=lookahead_weeks,
-                market_weight=market_weight,
-                elo_games=elo_games,
-                team_bias_games=team_bias_games,
-            )
-        except ValueError:
-            rec = None
-        if rec is not None and rec.team not in exclude_teams:
-            top = next(c for c in available if c.team == rec.team)
-            reasoning = rec.reasoning
-            projected_path = rec.projected_path
-        else:
-            top = max(available, key=lambda c: c.win_probability)
-            reasoning = (
-                "The multi-week optimizer couldn't produce a valid plan this week "
-                "(likely due to Entry B's exclusion); showing the single best option."
-            )
+    except ValueError:
+        rec = None
+    if rec is not None:
+        top = next(c for c in available if c.team == rec.team)
+        reasoning = rec.reasoning
+        projected_path = rec.projected_path
     else:
-        raw_available = entry_b_hedge.build_candidates(
-            season, week, used_teams, schedule=schedule, spread_model=spread_model,
-            market_weight=market_weight, elo_games=elo_games, team_bias_games=team_bias_games,
+        top = max(available, key=lambda c: c.win_probability)
+        reasoning = (
+            "The multi-week optimizer couldn't produce a valid plan this week "
+            "(likely due to the other entry's exclusion); showing the single best option."
         )
-        available = [c for c in raw_available if c.team not in exclude_teams]
-        if not available:
-            return None
-        eligible = entry_b_hedge.rank_picks(available)
-        if eligible:
-            top, runner_up = eligible[0], (eligible[1] if len(eligible) > 1 else None)
-            reasoning = entry_b_hedge.build_reasoning(top, runner_up)
-        else:
-            top = max(available, key=lambda c: c.win_probability)
-            reasoning = (
-                f"No team clears the {entry_b_hedge.DEFAULT_MIN_WIN_PROBABILITY:.0%} floor "
-                "this week. Showing the closest option."
-            )
+        projected_path = None
 
     return WeeklyRecommendation(
         team=top.team,
@@ -295,14 +282,11 @@ def _reset_simulation(season: int, starting_week: int) -> None:
     st.session_state["dual_log"] = []
 
 
-_ALGORITHM_NAME = {"A": "Value-Max", "B": "Hedge"}
-
-
 def _render_pick_line(pick: draft_order.DraftPick) -> None:
     spread_text = f", spread {pick.spread_line:+.1f}" if pick.spread_line is not None else ""
     matchup = _matchup_display(pick.team, pick.opponent, pick.is_home, bold_team=True)
     st.markdown(
-        f"**Pick #{pick.pick_number} ({_ALGORITHM_NAME[pick.entry]}):** {matchup} "
+        f"**Pick #{pick.pick_number}:** {matchup} "
         f"— {pick.win_probability:.1%}{spread_text}{_divergence_badge(pick.divergence)}"
         f"{_team_bias_badge(pick.team_bias_adjustment, pick.is_home)}",
         unsafe_allow_html=True,
@@ -322,8 +306,8 @@ def _render_entry_column(
 
     `extra_picks` are additional alternate picks (from the draft order, see
     strategy.draft_order) shown below the primary recommendation -- e.g.
-    Entry A's own pick #2, or all of another algorithm's picks once the
-    other entry has been eliminated.
+    Entry A's own round-2 pick, or all of the other entry's picks once
+    that entry has been eliminated.
     """
     st.markdown(f"### {label}")
     if eliminated:
@@ -506,11 +490,12 @@ def main() -> None:
         st.subheader(f"Week {current_week}")
 
         # Draft-order alternates (see strategy.draft_order): normally Entry A's
-        # own pick #2 and Entry B's own pick #4. Once one entry is eliminated,
-        # both algorithms keep drafting from the *surviving* entry's remaining
-        # teams -- so its card shows every pick from *both* algorithms except
-        # the one duplicating its own primary recommendation, still four
-        # distinct candidates total, just no longer split across two cards.
+        # own round-2 pick (#3) and Entry B's own round-2 pick (#4). Once one
+        # entry is eliminated, the draft keeps allocating picks from the
+        # *surviving* entry's remaining teams -- so its card shows every pick
+        # except the one duplicating its own primary recommendation, still
+        # four distinct candidates total, just no longer split across two
+        # cards.
         if eliminated_a and eliminated_b:
             draft = []
         else:
@@ -538,11 +523,11 @@ def main() -> None:
                 draft = []
 
         if eliminated_a and not eliminated_b:
-            extra_a, extra_b = [], [d for d in draft if d.pick_number != 3]
+            extra_a, extra_b = [], [d for d in draft if d.pick_number != 1]
         elif eliminated_b and not eliminated_a:
             extra_a, extra_b = [d for d in draft if d.pick_number != 1], []
         else:
-            extra_a = [d for d in draft if d.pick_number == 2]
+            extra_a = [d for d in draft if d.pick_number == 3]
             extra_b = [d for d in draft if d.pick_number == 4]
 
         rec_a = (
@@ -574,8 +559,8 @@ def main() -> None:
 
         # Entry B must never end up recommending (or offering) either of Entry
         # A's two displayed picks -- its own confirmed/selected pick and its
-        # pick #2 alternate -- not just whichever one is currently selected.
-        entry_a_pick2_team = next((d.team for d in draft if d.pick_number == 2), None)
+        # round-2 alternate -- not just whichever one is currently selected.
+        entry_a_pick2_team = next((d.team for d in draft if d.pick_number == 3), None)
         exclude_for_b = {selected_a} if selected_a else set()
         if entry_a_pick2_team:
             exclude_for_b.add(entry_a_pick2_team)

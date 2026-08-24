@@ -73,7 +73,7 @@ def build_candidates(
     used_teams: Iterable[str] = (),
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 1.0,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[TeamCandidate]:
@@ -178,7 +178,7 @@ def recommend_pick(
     state_path: Path = DEFAULT_STATE_PATH,
     min_win_probability: float = DEFAULT_MIN_WIN_PROBABILITY,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 1.0,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> PickRecommendation:

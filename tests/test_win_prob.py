@@ -61,8 +61,8 @@ def test_get_win_probability_uses_moneylines_when_present():
         "home_moneyline": -198,
         "away_moneyline": 164,
     }
-    home_prob = wp.get_win_probability(game, "KC").win_probability
-    away_prob = wp.get_win_probability(game, "DET").win_probability
+    home_prob = wp.get_win_probability(game, "KC", market_weight=1.0).win_probability
+    away_prob = wp.get_win_probability(game, "DET", market_weight=1.0).win_probability
     assert home_prob + away_prob == pytest.approx(1.0)
     assert home_prob > 0.5
 
@@ -77,8 +77,8 @@ def test_get_win_probability_falls_back_to_spread_when_moneylines_missing():
             "away_moneyline": np.nan,
         }
     )
-    home_prob = wp.get_win_probability(game, "KC", spread_model=FIXED_MODEL).win_probability
-    away_prob = wp.get_win_probability(game, "DET", spread_model=FIXED_MODEL).win_probability
+    home_prob = wp.get_win_probability(game, "KC", market_weight=1.0, spread_model=FIXED_MODEL).win_probability
+    away_prob = wp.get_win_probability(game, "DET", market_weight=1.0, spread_model=FIXED_MODEL).win_probability
     assert home_prob == pytest.approx(FIXED_MODEL.home_win_probability(4.0))
     assert home_prob + away_prob == pytest.approx(1.0)
 
@@ -135,11 +135,20 @@ def test_get_win_probability_rejects_invalid_market_weight():
         wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.3, elo_games=_elo_games())
 
 
-def test_get_win_probability_default_market_weight_ignores_elo_games():
-    # market_weight defaults to 1.0 -- elo_games is never consulted for the
-    # probability itself, so omitting it (or passing garbage) doesn't matter.
-    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC").win_probability
-    assert market_prob == pytest.approx(wp.get_win_probability(GAME_WITH_ID, "KC", elo_games=None).win_probability)
+def test_get_win_probability_market_weight_one_ignores_elo_games():
+    # market_weight=1.0 -- elo_games is never consulted for the probability
+    # itself, so omitting it (or passing garbage) doesn't matter.
+    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0).win_probability
+    assert market_prob == pytest.approx(
+        wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0, elo_games=None).win_probability
+    )
+
+
+def test_get_win_probability_default_market_weight_requires_elo_games():
+    # market_weight now defaults to 0.5 (a market/Elo blend), so elo_games
+    # is required even when the caller doesn't pass market_weight explicitly.
+    with pytest.raises(ValueError):
+        wp.get_win_probability(GAME_WITH_ID, "KC")
 
 
 def test_get_win_probability_requires_elo_games_when_blending():
@@ -187,9 +196,9 @@ def test_market_spread_uses_the_posted_spread_line_directly():
     # market_spread is always in the home team's convention, regardless of
     # which team's win probability was requested.
     game = {**GAME_WITH_ID, "spread_line": 6.5}
-    result = wp.get_win_probability(game, "KC")  # KC is home
+    result = wp.get_win_probability(game, "KC", market_weight=1.0)  # KC is home
     assert result.market_spread == pytest.approx(6.5)
-    away_result = wp.get_win_probability(game, "DET")
+    away_result = wp.get_win_probability(game, "DET", market_weight=1.0)
     assert away_result.market_spread == pytest.approx(6.5)
 
 
@@ -204,7 +213,7 @@ def test_market_spread_derived_from_moneylines_when_no_spread_line_posted():
         "home_moneyline": -198,
         "away_moneyline": 164,
     }
-    result = wp.get_win_probability(game, "KC", spread_model=FIXED_MODEL)
+    result = wp.get_win_probability(game, "KC", market_weight=1.0, spread_model=FIXED_MODEL)
     home_prob, _ = wp.devig_moneylines(-198, 164)
     expected = wp.home_win_probability_to_spread_line(home_prob, model=FIXED_MODEL)
     assert result.market_spread == pytest.approx(expected)
@@ -260,7 +269,7 @@ def test_divergence_is_identical_regardless_of_which_team_is_evaluated():
 
 
 def test_divergence_is_none_without_elo_games():
-    result = wp.get_win_probability(GAME_WITH_ID, "KC")
+    result = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0)
     assert result.elo_spread is None
     assert result.divergence is None
     assert result.market_spread is not None
@@ -381,8 +390,10 @@ def test_get_win_probability_applies_team_bias_as_final_step():
     bias_games = pd.DataFrame(
         [_bias_row(season, "KC", "OPP", 20, 10) for season in (2020, 2021, 2022)]
     )
-    without_bias = wp.get_win_probability(game, "KC")
-    with_bias = wp.get_win_probability(game, "KC", team_bias_games=bias_games, team_bias_max_adjustment=0.10)
+    without_bias = wp.get_win_probability(game, "KC", market_weight=1.0)
+    with_bias = wp.get_win_probability(
+        game, "KC", market_weight=1.0, team_bias_games=bias_games, team_bias_max_adjustment=0.10
+    )
 
     assert with_bias.team_bias_adjustment > 0
     assert with_bias.win_probability == pytest.approx(
@@ -391,7 +402,7 @@ def test_get_win_probability_applies_team_bias_as_final_step():
 
 
 def test_get_win_probability_team_bias_defaults_to_zero_when_not_supplied():
-    result = wp.get_win_probability(GAME_WITH_ID, "KC")
+    result = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0)
     assert result.team_bias_adjustment == 0.0
 
 
@@ -411,5 +422,5 @@ def test_get_win_probability_clamps_final_probability_to_valid_range():
     bias_games = pd.DataFrame(
         [_bias_row(season, "KC", "OPP", 20, 10) for season in (2020, 2021, 2022)]
     )
-    result = wp.get_win_probability(game, "KC", team_bias_games=bias_games)
+    result = wp.get_win_probability(game, "KC", market_weight=1.0, team_bias_games=bias_games)
     assert 0.01 <= result.win_probability <= 0.99
