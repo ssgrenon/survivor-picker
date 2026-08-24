@@ -121,7 +121,9 @@ def test_simulate_raises_when_algorithm_picks_unavailable_team():
 def test_simulate_respects_initial_used_teams():
     schedule = _schedule([_row(1, "KC", "DEN", 30, 10)])
     algorithm = sim.highest_win_probability_algorithm
-    result = sim.simulate(SEASON, 1, algorithm, schedule=schedule, initial_used_teams={"KC"}, market_weight=1.0)
+    result = sim.simulate(
+        SEASON, 1, algorithm, schedule=schedule, initial_used_teams={"KC"}, market_weight=1.0
+    )
     assert result.records[0].pick == "DEN"
 
 
@@ -140,7 +142,7 @@ def test_highest_win_probability_algorithm_raises_on_empty_available():
 def test_make_entry_b_algorithm_respects_floor():
     schedule = _schedule([_row(1, "KC", "DEN", home_ml=110, away_ml=-130)])  # KC underdog, below floor
     algorithm = sim.make_entry_b_algorithm(min_win_probability=0.65)
-    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule, market_weight=1.0)
+    available = hedge.build_candidates(SEASON, 1, used_teams=set(), schedule=schedule)
     with pytest.raises(ValueError):
         algorithm(SEASON, 1, set(), available)
 
@@ -273,6 +275,6 @@ def test_simulate_carries_team_bias_adjustment_into_week_records():
     assert without_bias.records[0].team_bias_adjustment == 0.0
 
     with_bias = sim.simulate(
-        SEASON, 1, algorithm, schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+        SEASON, 1, algorithm, schedule=schedule, market_weight=1.0, team_bias_games=bias_games
     )
     assert with_bias.records[0].team_bias_adjustment < 0

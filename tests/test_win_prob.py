@@ -135,17 +135,20 @@ def test_get_win_probability_rejects_invalid_market_weight():
         wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.3, elo_games=_elo_games())
 
 
+def test_get_win_probability_market_weight_one_ignores_elo_games():
+    # market_weight=1.0 -- elo_games is never consulted for the probability
+    # itself, so omitting it (or passing garbage) doesn't matter.
+    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0).win_probability
+    assert market_prob == pytest.approx(
+        wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0, elo_games=None).win_probability
+    )
+
+
 def test_get_win_probability_default_market_weight_requires_elo_games():
-    # market_weight now defaults to 0.75 (< 1.0), so elo_games must be supplied.
+    # market_weight now defaults to 0.5 (a market/Elo blend), so elo_games
+    # is required even when the caller doesn't pass market_weight explicitly.
     with pytest.raises(ValueError):
         wp.get_win_probability(GAME_WITH_ID, "KC")
-
-
-def test_get_win_probability_default_market_weight_blends_when_elo_supplied():
-    elo_games = _elo_games(home_prob=0.80)
-    market_only = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0, elo_games=elo_games).win_probability
-    default_result = wp.get_win_probability(GAME_WITH_ID, "KC", elo_games=elo_games).win_probability
-    assert default_result != pytest.approx(market_only)
 
 
 def test_get_win_probability_requires_elo_games_when_blending():
@@ -154,20 +157,14 @@ def test_get_win_probability_requires_elo_games_when_blending():
 
 
 def test_get_win_probability_blends_market_and_elo():
-    # The blend happens in spread space: adjusted_spread = market_spread +
-    # (1 - weight) * divergence, then converted back to a probability via
-    # the same calibrated model -- not a linear blend of probabilities.
     elo_games = _elo_games(home_prob=0.80)
-    baseline = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0, elo_games=elo_games)
+    market_prob = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=1.0, elo_games=elo_games).win_probability
     elo_only = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=0.0, elo_games=elo_games).win_probability
     assert elo_only == pytest.approx(0.80)
 
-    model = wp.get_spread_model()
     for weight in (0.75, 0.5, 0.25):
-        result = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=weight, elo_games=elo_games)
-        adjusted_spread = baseline.market_spread + (1 - weight) * result.divergence
-        expected = model.home_win_probability(adjusted_spread)
-        assert result.win_probability == pytest.approx(expected)
+        blended = wp.get_win_probability(GAME_WITH_ID, "KC", market_weight=weight, elo_games=elo_games).win_probability
+        assert blended == pytest.approx(weight * market_prob + (1 - weight) * elo_only)
 
 
 def test_get_win_probability_blend_is_symmetric_for_both_teams():

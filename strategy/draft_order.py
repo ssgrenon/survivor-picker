@@ -1,30 +1,20 @@
 """Sequential draft-order pick allocation across both entries.
 
-Both entries are now advised by the same algorithm: Entry A's multi-week
-DP optimizer (`models.dp_optimizer`, via `strategy.entry_a_value`).
-Entry B keeps its own independent used-teams history (a real second
-entry with its own picks), but its *recommendation* is no longer
-computed by the separate floor-based hedge strategy -- it's the same
-DP-optimizer logic run against Entry B's own pool.
+Computes the top-N picks for each entry such that all picks across both
+entries are guaranteed to be distinct teams. Both entries use the exact
+same algorithm (Entry A's multi-week DP optimizer, see
+`models.dp_optimizer` / `strategy.entry_a_value`) run independently
+against their own used-teams history; picks are allocated round by round
+-- Entry A's round-1 pick, then Entry B's round-1 pick (excluding
+whatever Entry A just took), then Entry A's round-2 pick (excluding both
+round-1 picks), then Entry B's round-2 pick (excluding all three prior
+picks), and so on.
 
-Four picks are drafted in strict dependency order, each excluding every
-team drafted earlier in the sequence on top of that entry's own real
-used-teams history:
-
-  1. Entry A recommended -- Entry A's algorithm, from Entry A's pool.
-  2. Entry B recommended -- Entry A's algorithm, from Entry B's pool,
-     excluding pick 1 (if the two entries' pools would otherwise agree,
-     Entry B's pick falls through to its own next-best choice instead).
-  3. Entry A alternative -- Entry A's algorithm, from Entry A's pool,
-     excluding picks 1 and 2.
-  4. Entry B alternative -- Entry A's algorithm, from Entry B's pool,
-     excluding picks 1, 2, and 3.
-
-A pick is not simply the next item on some static ranked list: excluding
-an already-drafted team can shift which team is genuinely optimal now
-(the DP optimizer may choose to hold a different team back), so each
-pick re-runs the full recommendation logic with the already-drafted
-teams folded into its used-teams set.
+A pick is not simply the next item on some static ranked list: since
+each entry's recommendation comes from a multi-week DP optimizer,
+excluding an already-drafted team can shift which team is genuinely
+optimal now, so each pick re-runs the full recommendation logic with the
+already-drafted teams folded into that entry's used-teams set.
 """
 
 from __future__ import annotations
@@ -71,16 +61,15 @@ def _draft_pick_for_entry(
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
     lookahead_weeks: int,
-    market_weight: float = 0.75,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> DraftPick:
     """Compute one entry's next pick, treating already-drafted teams as unavailable.
 
-    Always uses Entry A's DP-optimizer recommendation logic (see module
-    docstring), applied to `entry`'s own pool. Falls back to the plain
-    highest-win-probability remaining team if no viable DP sequence
-    exists once drafted teams are excluded.
+    Falls back to the plain highest-win-probability remaining team if the
+    multi-week optimizer finds no viable sequence once drafted teams are
+    excluded.
     """
     combined_used = used_teams | drafted_so_far
 
@@ -148,20 +137,15 @@ def draft_picks(
     schedule: Optional[pd.DataFrame] = None,
     spread_model: Optional[wp.SpreadModel] = None,
     lookahead_weeks: int = dp_optimizer.DEFAULT_LOOKAHEAD_WEEKS,
-    market_weight: float = 0.75,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[DraftPick]:
-    """Draft `rounds` picks for Entry A and `rounds` picks for Entry B, round by round.
+    """Draft `rounds` picks per entry, alternating A/B each round.
 
-    Both entries are advised by the same algorithm (see module
-    docstring). Every pick across both entries is guaranteed to be a
-    distinct team: each pick excludes every team drafted earlier in this
-    order on top of that entry's own real used-teams history. Picks are
-    computed round-major (round 1: A then B, round 2: A then B, ...) so
-    that each round's Entry B pick already excludes that same round's
-    Entry A pick -- e.g. if the two entries' pools would otherwise agree
-    on round 1, Entry B falls through to its own next-best choice.
+    Every pick across both entries is guaranteed to be a distinct team:
+    each pick excludes every team drafted earlier in this order (by
+    either entry) on top of that entry's own real used-teams history.
 
     Args:
         used_teams_a / used_teams_b: Each entry's already-spent teams
@@ -170,17 +154,14 @@ def draft_picks(
         schedule: Optional pre-loaded full-season schedule, to avoid
             re-downloading across repeated calls.
         lookahead_weeks: Planning window (N) passed through to the DP
-            optimizer (see `models.dp_optimizer`).
+            optimizer (see `models.dp_optimizer`), used identically for
+            both entries.
         market_weight / elo_games / team_bias_games: see
             `models.win_prob.get_win_probability`.
 
     Returns:
-        A flat list of `rounds * 2` `DraftPick`s: Entry A's `rounds`
-        picks (pick numbers 1..rounds) followed by Entry B's `rounds`
-        picks (pick numbers rounds+1..2*rounds) -- e.g. at the default
-        `rounds=2`: [A pick 1, A pick 2, B pick 1 (numbered 3), B pick 2
-        (numbered 4)], even though B's picks are computed interleaved
-        with A's round by round (see above) to get their exclusions right.
+        A flat list of `rounds * 2` `DraftPick`s in priority order:
+        [A round 1, B round 1, A round 2, B round 2, ...].
     """
     if schedule is None:
         schedule = nflverse_client.load_games(season=season)
@@ -189,43 +170,27 @@ def draft_picks(
     used_b: Set[str] = set(used_teams_b)
     drafted: Set[str] = set()
 
-    a_picks: List[DraftPick] = []
-    b_picks: List[DraftPick] = []
+    picks: List[DraftPick] = []
+    pick_number = 0
     for round_number in range(1, rounds + 1):
-        pick_a = _draft_pick_for_entry(
-            "A",
-            round_number,
-            round_number,
-            season,
-            week,
-            used_a,
-            drafted,
-            schedule,
-            spread_model,
-            lookahead_weeks,
-            market_weight=market_weight,
-            elo_games=elo_games,
-            team_bias_games=team_bias_games,
-        )
-        a_picks.append(pick_a)
-        drafted.add(pick_a.team)
+        for entry, used_teams in (("A", used_a), ("B", used_b)):
+            pick_number += 1
+            pick = _draft_pick_for_entry(
+                entry,
+                pick_number,
+                round_number,
+                season,
+                week,
+                used_teams,
+                drafted,
+                schedule,
+                spread_model,
+                lookahead_weeks,
+                market_weight=market_weight,
+                elo_games=elo_games,
+                team_bias_games=team_bias_games,
+            )
+            picks.append(pick)
+            drafted.add(pick.team)
 
-        pick_b = _draft_pick_for_entry(
-            "B",
-            rounds + round_number,
-            round_number,
-            season,
-            week,
-            used_b,
-            drafted,
-            schedule,
-            spread_model,
-            lookahead_weeks,
-            market_weight=market_weight,
-            elo_games=elo_games,
-            team_bias_games=team_bias_games,
-        )
-        b_picks.append(pick_b)
-        drafted.add(pick_b.team)
-
-    return a_picks + b_picks
+    return picks

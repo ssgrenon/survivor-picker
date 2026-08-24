@@ -11,37 +11,36 @@ The "market" probability comes from two sources of truth, in priority order:
    seasons via `data.nflverse_client`.
 
 `get_win_probability` can optionally blend that market probability with
-nfelo's Elo-model win probability (`data.nfelo_client`) via `market_weight`.
-The blend happens in *spread* space, not probability space: both models'
-implied point spreads are put on the same scale via the calibrated
-logistic model (`market_spread`/`elo_spread`, always expressed in the
-home team's spread convention -- positive means the home team is
-favored -- regardless of which team's win probability was requested),
-their signed difference is `divergence = elo_spread - market_spread`
-(positive when nfelo rates the home team more favorably than the market,
-negative when less favorably), and `market_weight` controls how much of
-that divergence gets added onto the market spread before converting back
-to a probability: `adjusted_spread = market_spread + (1 - market_weight)
-* divergence`, `blended = spread_model(adjusted_spread)`. At
-`market_weight = 1.0` none of the divergence is added (pure market); at
-`market_weight = 0.0` all of it is, which algebraically collapses to
-exactly the Elo spread (pure Elo). Because both spreads use the fixed
-home-team convention rather than the requested team's perspective, the
-same game always produces the same `divergence` no matter which team is
-being evaluated. When nfelo data is unavailable for a game (data lag,
-early-season gap, or a game outside nfelo's coverage), it falls back to
-100% market probability for that game and logs the fallback so it's
-visible during backtesting.
+nfelo's Elo-model win probability (`data.nfelo_client`) via `market_weight`:
+`blended = market_weight * market_prob + (1 - market_weight) * elo_prob`.
+When nfelo data is unavailable for a game (data lag, early-season gap, or
+a game outside nfelo's coverage), it falls back to 100% market probability
+for that game and logs the fallback so it's visible during backtesting.
+
+Whenever `elo_games` is supplied, `get_win_probability` also reports each
+model's implied point spread (`market_spread`/`elo_spread`, both on the
+same spread-point scale via the calibrated logistic model, and both
+always expressed in the home team's spread convention -- positive means
+the home team is favored -- regardless of which team's win probability
+was requested) and their signed difference (`divergence` = elo_spread -
+market_spread: positive when nfelo rates the home team more favorably
+than the market, negative when less favorably). Because both spreads use
+the fixed home-team convention rather than the requested team's
+perspective, the same game always produces the same `divergence` no
+matter which team is being evaluated. `divergence` is a display/
+awareness signal only, computed independently of `market_weight` and
+never used to alter the blended probability itself.
 
 Whenever `team_bias_games` is supplied, `get_win_probability` applies one
 more, final adjustment: `team`'s own historical market-calibration bias
 for the given home/away context (see `compute_team_bias`) -- a small,
 shrunk, recency-weighted correction for teams the market has
 systematically over- or under-rated in that context historically. This
-is added on top of the market/Elo blend and clamped to [0.01, 0.99]; the
-adjustment itself is also reported (`team_bias_adjustment`) so it's
-visible when the model is leaning on it. It defaults to 0.0 (no
-adjustment) when `team_bias_games` isn't supplied.
+is genuinely a scoring input (unlike `divergence`), added on top of the
+market/Elo blend and clamped to [0.01, 0.99]; the adjustment itself is
+also reported (`team_bias_adjustment`) so it's visible when the model is
+leaning on it. It defaults to 0.0 (no adjustment) when `team_bias_games`
+isn't supplied.
 """
 
 from __future__ import annotations
@@ -63,9 +62,9 @@ logger = logging.getLogger(__name__)
 # spread fallback model against by default.
 DEFAULT_CALIBRATION_SEASONS = 10
 
-# Valid market_weight values: fraction of the market spread kept as-is,
-# with the remainder (1 - market_weight) of the model's Elo-divergence
-# added onto it before converting to a probability (see module docstring).
+# Valid market_weight values: fraction of the blended probability drawn
+# from the market probability, with the remainder (1 - market_weight)
+# drawn from nfelo's Elo win probability.
 VALID_MARKET_WEIGHTS = (1.0, 0.75, 0.5, 0.25, 0.0)
 
 # Team-bias defaults (see compute_team_bias): per-season recency-decay
@@ -373,9 +372,9 @@ class WinProbabilityResult:
     market_spread) is identical for the same game no matter which team is
     being evaluated. `market_spread` is always populated. `elo_spread`/
     `divergence` are None whenever `elo_games` wasn't supplied, or nfelo
-    has no rating for this particular game. `divergence` is a genuine
-    scoring input whenever `market_weight < 1.0` -- see the module
-    docstring for the spread-space blend it feeds into.
+    has no rating for this particular game -- `divergence` is a display/
+    awareness signal only, computed independently of `market_weight`,
+    never a scoring input.
     """
 
     win_probability: float
@@ -388,7 +387,7 @@ class WinProbabilityResult:
 def get_win_probability(
     game_row: Mapping[str, Any],
     team: str,
-    market_weight: float = 0.75,
+    market_weight: float = 0.5,
     spread_model: Optional[SpreadModel] = None,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
@@ -408,12 +407,11 @@ def get_win_probability(
     calibrated spread model.
 
     Args:
-        market_weight: Fraction of the market spread kept as-is; the rest
-            (1 - market_weight) of the model's divergence from nfelo's
-            Elo spread (`elo_games`, see
-            `data.nfelo_client.load_nfelo_games`) is added onto the
-            market spread before converting to a probability (see module
-            docstring). Must be one of `VALID_MARKET_WEIGHTS`.
+        market_weight: Fraction of `.win_probability` drawn from the
+            market probability; the rest (1 - market_weight) is drawn
+            from nfelo's Elo win probability (`elo_games`, see
+            `data.nfelo_client.load_nfelo_games`). Must be one of
+            `VALID_MARKET_WEIGHTS`.
         elo_games: Pre-loaded nfelo table from
             `data.nfelo_client.load_nfelo_games()`. Required (non-None)
             whenever `market_weight < 1.0`. When supplied (at any
@@ -478,10 +476,7 @@ def get_win_probability(
             # produces the same divergence regardless of which team is being evaluated.
             divergence = elo_spread - market_spread
             if market_weight < 1.0:
-                model = spread_model or get_spread_model()
-                adjusted_spread = market_spread + (1.0 - market_weight) * divergence
-                home_prob_adjusted = model.home_win_probability(adjusted_spread)
-                win_probability = home_prob_adjusted if team == home_team else 1.0 - home_prob_adjusted
+                win_probability = market_weight * market_prob + (1.0 - market_weight) * elo_prob
     elif market_weight < 1.0:
         raise ValueError("elo_games is required when market_weight < 1.0")
 

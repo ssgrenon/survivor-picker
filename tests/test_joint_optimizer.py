@@ -149,7 +149,7 @@ def test_recommend_joint_pick_threads_team_bias_games():
     )
     rec = jo.recommend_joint_pick(
         2026, 5, used_teams_a=set(), used_teams_b=set(), schedule=schedule,
-        team_bias_games=bias_games, market_weight=1.0,
+        market_weight=1.0, team_bias_games=bias_games,
     )
     kc_prob = rec.win_probability_a if rec.pick_a == "KC" else (
         rec.win_probability_b if rec.pick_b == "KC" else None

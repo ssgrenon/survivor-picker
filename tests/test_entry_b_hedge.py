@@ -3,7 +3,6 @@ import json
 import pandas as pd
 import pytest
 
-from models import win_prob as wp
 from strategy import entry_b_hedge as hedge
 
 
@@ -119,10 +118,11 @@ def test_build_candidates_skips_games_with_no_odds_yet():
         ],
         ignore_index=True,
     )
-    candidates = hedge.build_candidates(2026, 5, used_teams=set(), schedule=schedule)
+    candidates = hedge.build_candidates(2026, 5, used_teams=set(), schedule=schedule, market_weight=1.0)
     teams = {c.team for c in candidates}
     assert "MIA" not in teams
     assert "NYJ" not in teams
+    assert {"KC", "SF"} <= teams
 
 
 def test_recommend_pick_picks_highest_prob_above_floor():
@@ -168,29 +168,24 @@ def _week_schedule_with_game_ids():
 
 
 def test_build_candidates_threads_market_weight_and_elo_games():
-    # The blend happens in spread space (see models.win_prob), not a linear
-    # blend of probabilities.
     schedule = _week_schedule_with_game_ids()
     elo_games = _elo_games_for_week_schedule()
 
     market_only = hedge.build_candidates(2026, 5, used_teams=set(), schedule=schedule, market_weight=1.0)
-    kc_market = next(c for c in market_only if c.team == "KC")
+    kc_market = next(c for c in market_only if c.team == "KC").win_probability
 
     elo_only = hedge.build_candidates(
         2026, 5, used_teams=set(), schedule=schedule, market_weight=0.0, elo_games=elo_games
     )
     kc_elo = next(c for c in elo_only if c.team == "KC").win_probability
     assert kc_elo == pytest.approx(0.20)
-    assert kc_elo != pytest.approx(kc_market.win_probability)
+    assert kc_elo != pytest.approx(kc_market)
 
     blended = hedge.build_candidates(
         2026, 5, used_teams=set(), schedule=schedule, market_weight=0.5, elo_games=elo_games
     )
-    kc_blended = next(c for c in blended if c.team == "KC")
-    model = wp.get_spread_model()
-    adjusted_spread = kc_market.spread_line + 0.5 * kc_blended.divergence
-    expected = model.home_win_probability(adjusted_spread)
-    assert kc_blended.win_probability == pytest.approx(expected)
+    kc_blended = next(c for c in blended if c.team == "KC").win_probability
+    assert kc_blended == pytest.approx(0.5 * kc_market + 0.5 * kc_elo)
 
 
 def test_build_candidates_populates_divergence_independent_of_market_weight():
@@ -248,7 +243,7 @@ def test_build_candidates_threads_team_bias_games():
     assert kc_without.team_bias_adjustment == 0.0
 
     with_bias = hedge.build_candidates(
-        2026, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+        2026, 5, used_teams=set(), schedule=schedule, market_weight=1.0, team_bias_games=bias_games
     )
     kc_with = next(c for c in with_bias if c.team == "KC")
     assert kc_with.team_bias_adjustment > 0
@@ -259,7 +254,7 @@ def test_recommend_pick_carries_team_bias_adjustment_through():
     schedule = _week_schedule_with_game_ids()
     bias_games = _team_bias_games_favoring_kc_at_home()
     rec = hedge.recommend_pick(
-        2026, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+        2026, 5, used_teams=set(), schedule=schedule, market_weight=1.0, team_bias_games=bias_games
     )
     assert rec.team == "KC"
     assert rec.team_bias_adjustment > 0

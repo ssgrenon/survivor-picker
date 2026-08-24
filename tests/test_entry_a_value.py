@@ -90,10 +90,11 @@ def test_build_candidates_skips_games_with_no_odds_yet():
         ],
         ignore_index=True,
     )
-    candidates = strat.build_candidates(SEASON, 5, used_teams=set(), schedule=schedule)
+    candidates = strat.build_candidates(SEASON, 5, used_teams=set(), schedule=schedule, market_weight=1.0)
     teams = {c.team for c in candidates}
     assert "MIA" not in teams
     assert "NYJ" not in teams
+    assert {"KC", "SF"} <= teams
 
 
 def _sequence_result(path_probs, week_offset=1):
@@ -239,13 +240,13 @@ def test_build_candidates_and_recommend_pick_thread_team_bias_games():
     )
 
     candidates = strat.build_candidates(
-        SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+        SEASON, 5, used_teams=set(), schedule=schedule, market_weight=1.0, team_bias_games=bias_games
     )
     kc = next(c for c in candidates if c.team == "KC")
     assert kc.team_bias_adjustment < 0
 
     rec = strat.recommend_pick(
-        SEASON, 5, used_teams=set(), schedule=schedule, team_bias_games=bias_games, market_weight=1.0
+        SEASON, 5, used_teams=set(), schedule=schedule, market_weight=1.0, team_bias_games=bias_games
     )
     kc_available = next(c for c in rec.available if c.team == "KC")
     assert kc_available.team_bias_adjustment == kc.team_bias_adjustment

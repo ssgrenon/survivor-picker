@@ -81,7 +81,7 @@ def _week_candidates(
     excluded_teams: Set[str],
     schedule: pd.DataFrame,
     spread_model: Optional[wp.SpreadModel],
-    market_weight: float = 0.75,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> List[WeekPick]:
@@ -201,7 +201,7 @@ def optimize_pick_sequence(
     per_week_top_k: int = DEFAULT_PER_WEEK_TOP_K,
     max_candidate_teams: int = DEFAULT_MAX_CANDIDATE_TEAMS,
     spread_model: Optional[wp.SpreadModel] = None,
-    market_weight: float = 0.75,
+    market_weight: float = 0.5,
     elo_games: Optional[pd.DataFrame] = None,
     team_bias_games: Optional[pd.DataFrame] = None,
 ) -> OptimizedSequence:
