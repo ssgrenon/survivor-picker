@@ -79,32 +79,22 @@ def _holding_tension_schedule():
 
 def test_second_pick_reruns_recommendation_excluding_the_first():
     # Unconstrained, Entry A holds X and picks Y for week 1 (see
-    # test_dp_optimizer.py's equivalent scenario). For pick #2, Entry A's
-    # DP re-runs with Y excluded: AAA (~0.20) is too weak a week-1
-    # substitute to be worth holding X for its week-2 game anymore
-    # (0.80*0.55 beats 0.20*0.95), so pick #2 switches to X instead of
-    # continuing to hold it -- proving it's a genuine re-optimization, not
-    # a stale index into A's original (unconstrained) list.
+    # test_dp_optimizer.py's equivalent scenario). Entry B's recommendation
+    # (round 1) then re-runs the same algorithm on its own pool excluding
+    # Y: with no reason to hold X back (Entry B has no week-1 pick yet
+    # tying up the choice), it takes X outright. That leaves Entry A's
+    # alternate (round 2) to re-run excluding *both* Y and X -- proving
+    # it's a genuine re-optimization against the full drafted set, not a
+    # stale index into A's original (unconstrained) list.
     schedule = _holding_tension_schedule()
     picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
-    teams = [p.team for p in picks]
+    a_rec, a_alt, b_rec, b_alt = picks
 
-    assert teams[0] == "Y"  # Entry A's unconstrained pick #1: holds X, takes Y
-    assert teams[1] == "X"  # Entry A's pick #2: no longer worth holding X once Y is gone
-    assert len(set(teams)) == 4
-
-
-def test_falls_back_when_entry_b_floor_excludes_everything_remaining():
-    # Entry A's two picks (Y, then X) claim both of week 1's floor-clearing
-    # options. Entry B is left with only AAA (~0.20) and BBB (~0.40),
-    # neither of which clears its 65% floor -- both of B's picks should
-    # still resolve via the documented fallback rather than raising.
-    schedule = _holding_tension_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
-    third, fourth = picks[2], picks[3]
-
-    assert third.entry == "B" and third.team == "BBB" and "Fallback" in third.reasoning
-    assert fourth.entry == "B" and fourth.team == "AAA" and "Fallback" in fourth.reasoning
+    assert a_rec.team == "Y"  # Entry A's recommendation: holds X, takes Y
+    assert b_rec.team == "X"  # Entry B's recommendation: no reason to hold, takes X
+    assert a_alt.team == "BBB"  # Entry A's alternate: excludes Y (own) and X (Entry B's)
+    assert b_alt.team == "AAA"  # Entry B's alternate: only team left
+    assert len({a_rec.team, a_alt.team, b_rec.team, b_alt.team}) == 4
 
 
 def test_draft_picks_works_when_both_entries_share_the_same_used_teams():
@@ -171,69 +161,36 @@ def test_draft_picks_threads_market_weight_and_changes_the_pick():
     assert blended_picks[0].team == "BUF"
 
 
-def _home_override_schedule():
-    # Pick #1 candidates: AWAYFAV (away, ~90%) beats everything else, so
-    # both entries' round-1 pick lands on an away team.
-    # HOMEFAV (home, ~65%) is the best *home* candidate overall, but
-    # AWAYFAV2 (away, ~80%) out-ranks it on raw win probability -- so a
-    # normal (non-overridden) round-2 pick would take AWAYFAV2, while the
-    # home-game override must instead force HOMEFAV / WEAK3.
-    return pd.DataFrame(
-        [
-            _row(1, "WEAK1", "AWAYFAV", 650, -900),  # AWAYFAV ~90% (away)
-            _row(1, "HOMEFAV", "WEAK2", -190, 160),  # HOMEFAV ~65% (home)
-            _row(1, "WEAK3", "AWAYFAV2", 210, -250),  # AWAYFAV2 ~71% (away)
-        ]
-    )
+def test_entry_b_recommendation_uses_entry_a_algorithm_and_avoids_collision():
+    # A fresh single-week pool: with no used-teams history, Entry A's and
+    # Entry B's *raw* pools are identical, so Entry B's own algorithm-A
+    # recommendation would independently agree with Entry A's (KC, the
+    # heaviest favorite) if not for the cross-entry exclusion -- proving
+    # Entry B now runs the same algorithm as Entry A, and falls through to
+    # its own next-best choice when the two would otherwise collide.
+    schedule = _basic_week_schedule()
+    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=1, schedule=schedule, market_weight=1.0)
+    entry_a_rec, entry_b_rec = picks
+
+    assert entry_a_rec.team == "KC"
+    assert entry_b_rec.team == "SF"  # next best once KC is excluded
+    assert entry_a_rec.team != entry_b_rec.team
 
 
-def test_pick_2_forces_best_home_game_when_pick_1_is_away():
-    schedule = _home_override_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
-    pick1, pick2 = picks[0], picks[1]
-
-    assert pick1.team == "AWAYFAV" and pick1.is_home is False
-    assert pick2.team == "HOMEFAV" and pick2.is_home is True
-    assert "Home-game override" in pick2.reasoning
-
-
-def test_pick_4_forces_best_home_game_when_pick_3_is_away():
-    schedule = _home_override_schedule()
-    picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
-    pick3, pick4 = picks[2], picks[3]
-
-    # Entry A already drafted AWAYFAV and HOMEFAV, so Entry B's best
-    # remaining option is AWAYFAV2 (away, ~71%), clearing its 65% floor.
-    assert pick3.team == "AWAYFAV2" and pick3.is_home is False
-    assert pick4.team == "WEAK3" and pick4.is_home is True
-    assert "Home-game override" in pick4.reasoning
-
-
-def test_no_home_override_when_pick_1_is_already_home():
-    # _basic_week_schedule's pick #1 (KC, ~90% home favorite) is already a
-    # home game, so pick #2 should follow the normal (unconstrained)
-    # recommendation logic -- no override language in its reasoning.
+def test_alternates_exclude_both_recommendations_in_sequence():
+    # Entry A's alternate must differ from both recommendations; Entry B's
+    # alternate must differ from all three other picks shown that week.
     schedule = _basic_week_schedule()
     picks = do.draft_picks(SEASON, 1, used_teams_a=set(), used_teams_b=set(), rounds=2, schedule=schedule, market_weight=1.0)
-    assert picks[0].is_home is True
-    assert "Home-game override" not in picks[1].reasoning
+    a_rec, a_alt, b_rec, b_alt = picks
 
-
-def test_home_override_falls_back_to_normal_pick_when_no_home_game_remains():
-    schedule = _home_override_schedule()
-    # All three home teams from the schedule are already used, so once
-    # AWAYFAV is drafted as pick #1 there is no home candidate left for
-    # pick #2 -- it must fall back to the normal recommendation instead of
-    # raising.
-    picks = do.draft_picks(
-        SEASON, 1, used_teams_a={"WEAK1", "HOMEFAV", "WEAK3"}, used_teams_b=set(), rounds=2, schedule=schedule,
-        market_weight=1.0,
-    )
-    pick1, pick2 = picks[0], picks[1]
-
-    assert pick1.team == "AWAYFAV" and pick1.is_home is False
-    assert pick2.team == "AWAYFAV2"  # only team left for A once home teams are excluded
-    assert "Home-game override" not in pick2.reasoning
+    assert a_rec.team == "KC"
+    assert b_rec.team == "SF"
+    assert a_alt.team == "BUF"  # best remaining once KC and SF are excluded
+    assert a_alt.team not in {a_rec.team, b_rec.team}
+    assert b_alt.team == "DAL"  # best remaining once KC, BUF, and SF are excluded
+    assert b_alt.team not in {a_rec.team, a_alt.team, b_rec.team}
+    assert len({a_rec.team, a_alt.team, b_rec.team, b_alt.team}) == 4
 
 
 def test_draft_picks_threads_team_bias_games():
