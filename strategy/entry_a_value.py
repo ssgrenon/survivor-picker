@@ -48,11 +48,50 @@ class PickRecommendation:
     team_bias_adjustment: float = 0.0
 
 
-def load_used_teams(state_path: Path = DEFAULT_STATE_PATH) -> Set[str]:
-    """Return the set of teams Entry A has already used, from its state file."""
+def load_used_teams(state_path: Path = DEFAULT_STATE_PATH, season: Optional[int] = None) -> Set[str]:
+    """Return the set of teams Entry A has already used, from its state file.
+
+    If `season` is given and doesn't match the file's recorded season,
+    returns an empty set -- a new season never inherits a stale
+    used-teams history.
+    """
     with open(state_path) as f:
         state = json.load(f)
+    if season is not None and state.get("season") != season:
+        return set()
     return set(state.get("used_teams", {}).values())
+
+
+def load_state(state_path: Path = DEFAULT_STATE_PATH) -> dict:
+    """Return the full parsed state file: {"entry", "season", "used_teams": {week_str: team}}.
+
+    A missing file reads as an empty, season-less state, so callers can
+    treat "no state saved yet" the same as "wrong season" without a
+    separate existence check.
+    """
+    state_path = Path(state_path)
+    if not state_path.exists():
+        return {"entry": ENTRY_NAME, "season": None, "used_teams": {}}
+    with open(state_path) as f:
+        return json.load(f)
+
+
+def save_pick(week: int, team: str, season: int, state_path: Path = DEFAULT_STATE_PATH) -> None:
+    """Record `team` as Entry A's confirmed pick for `week` in `season`, in the state file.
+
+    A season mismatch against whatever's currently on disk clears any
+    prior season's recorded picks first, so a new season never inherits
+    a stale used-teams history. Re-recording an already-recorded week
+    overwrites it (a correction) rather than accumulating duplicates.
+    """
+    state_path = Path(state_path)
+    state = load_state(state_path)
+    if state.get("season") != season:
+        state = {"entry": ENTRY_NAME, "season": season, "used_teams": {}}
+    state["used_teams"][str(week)] = team
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(state_path, "w") as f:
+        json.dump(state, f, indent=2)
 
 
 def build_candidates(

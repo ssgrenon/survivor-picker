@@ -40,6 +40,51 @@ def test_load_used_teams_empty_state(tmp_path):
     assert strat.load_used_teams(state_path) == set()
 
 
+def test_load_used_teams_returns_empty_set_on_season_mismatch(tmp_path):
+    state_path = tmp_path / "used_teams_a.json"
+    state_path.write_text(json.dumps({"entry": "A", "season": 2025, "used_teams": {"1": "KC"}}))
+    assert strat.load_used_teams(state_path, season=2026) == set()
+    assert strat.load_used_teams(state_path, season=2025) == {"KC"}
+    assert strat.load_used_teams(state_path) == {"KC"}  # no season given -- no filtering
+
+
+def test_load_state_missing_file_returns_empty_seasonless_state(tmp_path):
+    state_path = tmp_path / "does_not_exist.json"
+    state = strat.load_state(state_path)
+    assert state == {"entry": "A", "season": None, "used_teams": {}}
+
+
+def test_save_pick_creates_file_and_records_week(tmp_path):
+    state_path = tmp_path / "used_teams_a.json"
+    strat.save_pick(1, "KC", 2026, state_path)
+    state = strat.load_state(state_path)
+    assert state == {"entry": "A", "season": 2026, "used_teams": {"1": "KC"}}
+
+
+def test_save_pick_accumulates_across_weeks(tmp_path):
+    state_path = tmp_path / "used_teams_a.json"
+    strat.save_pick(1, "KC", 2026, state_path)
+    strat.save_pick(2, "SF", 2026, state_path)
+    state = strat.load_state(state_path)
+    assert state["used_teams"] == {"1": "KC", "2": "SF"}
+
+
+def test_save_pick_overwrites_an_already_recorded_week(tmp_path):
+    state_path = tmp_path / "used_teams_a.json"
+    strat.save_pick(1, "KC", 2026, state_path)
+    strat.save_pick(1, "SF", 2026, state_path)
+    state = strat.load_state(state_path)
+    assert state["used_teams"] == {"1": "SF"}
+
+
+def test_save_pick_clears_prior_season_on_mismatch(tmp_path):
+    state_path = tmp_path / "used_teams_a.json"
+    state_path.write_text(json.dumps({"entry": "A", "season": 2025, "used_teams": {"1": "KC", "2": "SF"}}))
+    strat.save_pick(1, "BUF", 2026, state_path)
+    state = strat.load_state(state_path)
+    assert state == {"entry": "A", "season": 2026, "used_teams": {"1": "BUF"}}
+
+
 def _week_schedule():
     return pd.DataFrame(
         [
