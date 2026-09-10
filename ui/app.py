@@ -271,15 +271,139 @@ def _actual_score_display(schedule: pd.DataFrame, week: int, team: str, opponent
     return f"{int(team_score)}-{int(opp_score)}"
 
 
-def _reset_simulation(season: int, starting_week: int) -> None:
+def _persisted_weeks_for_season(season: int) -> Set[int]:
+    """Every week number either entry has a saved pick for, in `season`."""
+    state_a = entry_a_value.load_state()
+    state_b = entry_b_hedge.load_state()
+    weeks: Set[int] = set()
+    if state_a.get("season") == season:
+        weeks |= {int(w) for w in state_a["used_teams"]}
+    if state_b.get("season") == season:
+        weeks |= {int(w) for w in state_b["used_teams"]}
+    return weeks
+
+
+def _default_starting_week(season: int) -> int:
+    """The week after the latest one either entry has a saved pick for, or 1 if none."""
+    weeks = _persisted_weeks_for_season(season)
+    return (max(weeks) + 1) if weeks else 1
+
+
+def _build_entry_row(
+    prefix: str,
+    selected: Optional[str],
+    rec: Optional[WeeklyRecommendation],
+    schedule: pd.DataFrame,
+    week: int,
+) -> tuple:
+    """One entry's slice of a Results Log row, plus its outcome (or None if no pick).
+
+    Shared by the live "Confirm" flow and by replaying saved picks on
+    reset, so both build identical columns from a real schedule lookup
+    rather than depending on `rec` for anything but the "Suggestion" /
+    "Match or Override" framing.
+    """
+    if selected is None:
+        return {f"{prefix}: {c}": "—" for c in ROW_COLUMNS}, None
+
+    game_row = sim.find_game_row(schedule, week, selected)
+    is_home = selected == game_row["home_team"]
+    opponent = game_row["away_team"] if is_home else game_row["home_team"]
+    _, outcome = sim.score_pick(game_row, selected)
+    cand = next((c for c in rec.available if c.team == selected), None) if rec is not None else None
+
+    row = {
+        f"{prefix}: Suggestion": (
+            _matchup_display(rec.team, rec.opponent, rec.is_home) if rec is not None else "—"
+        ),
+        f"{prefix}: Pick": selected,
+        f"{prefix}: Win Prob": cand.win_probability if cand is not None else None,
+        f"{prefix}: Spread": cand.spread_line if cand is not None else None,
+        f"{prefix}: Score": _actual_score_display(schedule, week, selected, opponent, is_home),
+        f"{prefix}: Result": outcome,
+        f"{prefix}: Match/Override": (
+            ("Match" if selected == rec.team else "Override") if rec is not None else "—"
+        ),
+        f"{prefix}: Model Divergence": cand.divergence if cand is not None else None,
+        f"{prefix}: Team Bias": cand.team_bias_adjustment if cand is not None else 0.0,
+    }
+    return row, outcome
+
+
+def _reset_simulation(season: int, starting_week: int, lookahead_weeks: int, weight_label: str) -> None:
+    """Start (or restart) the dual walkthrough at `starting_week`, replaying any
+    saved picks from earlier weeks of this same season back into the log.
+
+    Weeks at or after `starting_week` are never replayed, even if saved --
+    lowering Starting Week below what's persisted is how you deliberately
+    redo those weeks.
+    """
+    market_weight = MARKET_WEIGHT_OPTIONS[weight_label]
+    schedule = _load_schedule(season)
+    spread_model = _get_spread_model()
+    elo_games = _get_elo_games() if market_weight < 1.0 else None
+    team_bias_games = _get_team_bias_games()
+
+    state_a = entry_a_value.load_state()
+    state_b = entry_b_hedge.load_state()
+    picks_a = state_a["used_teams"] if state_a.get("season") == season else {}
+    picks_b = state_b["used_teams"] if state_b.get("season") == season else {}
+    replay_weeks = sorted(
+        w for w in ({int(w) for w in picks_a} | {int(w) for w in picks_b}) if w < starting_week
+    )
+
+    used_a: Set[str] = set()
+    used_b: Set[str] = set()
+    eliminated_a = eliminated_b = False
+    log: list = []
+
+    for week in replay_weeks:
+        row = {"Week": week, "Blend": weight_label}
+
+        team_a = picks_a.get(str(week)) if not eliminated_a else None
+        rec_a = (
+            get_entry_recommendation(
+                "A", season, week, used_a, schedule, spread_model,
+                lookahead_weeks=lookahead_weeks, market_weight=market_weight,
+                elo_games=elo_games, team_bias_games=team_bias_games,
+            )
+            if team_a
+            else None
+        )
+        row_a, outcome_a = _build_entry_row("A", team_a, rec_a, schedule, week)
+        row.update(row_a)
+        if team_a:
+            used_a.add(team_a)
+            if outcome_a == "LOSS":
+                eliminated_a = True
+
+        team_b = picks_b.get(str(week)) if not eliminated_b else None
+        rec_b = (
+            get_entry_recommendation(
+                "B", season, week, used_b, schedule, spread_model,
+                exclude_teams={team_a} if team_a else set(),
+                market_weight=market_weight, elo_games=elo_games, team_bias_games=team_bias_games,
+            )
+            if team_b
+            else None
+        )
+        row_b, outcome_b = _build_entry_row("B", team_b, rec_b, schedule, week)
+        row.update(row_b)
+        if team_b:
+            used_b.add(team_b)
+            if outcome_b == "LOSS":
+                eliminated_b = True
+
+        log.append(row)
+
     st.session_state["dual_active"] = True
     st.session_state["dual_season"] = season
     st.session_state["dual_current_week"] = int(starting_week)
-    st.session_state["dual_used_a"] = set()
-    st.session_state["dual_used_b"] = set()
-    st.session_state["dual_eliminated_a"] = False
-    st.session_state["dual_eliminated_b"] = False
-    st.session_state["dual_log"] = []
+    st.session_state["dual_used_a"] = used_a
+    st.session_state["dual_used_b"] = used_b
+    st.session_state["dual_eliminated_a"] = eliminated_a
+    st.session_state["dual_eliminated_b"] = eliminated_b
+    st.session_state["dual_log"] = log
 
 
 def _render_pick_line(pick: draft_order.DraftPick) -> None:
@@ -424,7 +548,9 @@ def main() -> None:
     st.title("Survivor Pool Algorithm Backtester")
     st.caption(
         "Step through a season week by week for both entries at once: "
-        "Entry A picks first, Entry B picks the best of what's left."
+        "Entry A picks first, Entry B picks the best of what's left. "
+        "Confirmed picks are saved to state/used_teams_a.json and "
+        "used_teams_b.json and reloaded automatically for the same season."
     )
 
     seasons = _available_seasons()
@@ -436,7 +562,9 @@ def main() -> None:
     with col1:
         season = st.selectbox("Season", options=list(reversed(seasons)), index=0)
     with col2:
-        starting_week = st.number_input("Starting Week", min_value=1, max_value=22, value=1, step=1)
+        starting_week = st.number_input(
+            "Starting Week", min_value=1, max_value=22, value=_default_starting_week(season), step=1
+        )
     with col3:
         lookahead_weeks = st.selectbox(
             "Lookahead Weeks (N)",
@@ -460,10 +588,17 @@ def main() -> None:
         st.write("")
         st.write("")
         if st.button("Reset Simulation", type="primary"):
-            _reset_simulation(season, starting_week)
+            _reset_simulation(season, starting_week, lookahead_weeks, weight_label)
 
     if not st.session_state.get("dual_active"):
-        st.info("Pick a season, then click Reset Simulation to start picking week by week for both entries.")
+        persisted_weeks = _persisted_weeks_for_season(season)
+        if persisted_weeks:
+            st.info(
+                f"Found saved picks for {season} through week {max(persisted_weeks)}. "
+                f"Click Reset Simulation to load them and continue from week {starting_week}."
+            )
+        else:
+            st.info("Pick a season, then click Reset Simulation to start picking week by week for both entries.")
         return
 
     season = st.session_state["dual_season"]
@@ -611,55 +746,21 @@ def main() -> None:
             if st.button("Confirm Both Picks & Advance", type="primary"):
                 row = {"Week": current_week, "Blend": weight_label}
 
+                row_a, outcome_a = _build_entry_row("A", selected_a, rec_a, schedule, current_week)
+                row.update(row_a)
                 if selected_a is not None:
-                    cand_a = next(c for c in rec_a.available if c.team == selected_a)
-                    game_row_a = sim.find_game_row(schedule, current_week, selected_a)
-                    _, outcome_a = sim.score_pick(game_row_a, selected_a)
                     used_a.add(selected_a)
-                    row.update(
-                        {
-                            "A: Suggestion": _matchup_display(rec_a.team, rec_a.opponent, rec_a.is_home),
-                            "A: Pick": selected_a,
-                            "A: Win Prob": cand_a.win_probability,
-                            "A: Spread": cand_a.spread_line,
-                            "A: Score": _actual_score_display(
-                                schedule, current_week, selected_a, cand_a.opponent, cand_a.is_home
-                            ),
-                            "A: Result": outcome_a,
-                            "A: Match/Override": "Match" if selected_a == rec_a.team else "Override",
-                            "A: Model Divergence": cand_a.divergence,
-                            "A: Team Bias": cand_a.team_bias_adjustment,
-                        }
-                    )
+                    entry_a_value.save_pick(current_week, selected_a, season)
                     if outcome_a == "LOSS":
                         st.session_state["dual_eliminated_a"] = True
-                else:
-                    row.update({f"A: {c}": "—" for c in ROW_COLUMNS})
 
+                row_b, outcome_b = _build_entry_row("B", selected_b, rec_b, schedule, current_week)
+                row.update(row_b)
                 if selected_b is not None:
-                    cand_b = next(c for c in rec_b.available if c.team == selected_b)
-                    game_row_b = sim.find_game_row(schedule, current_week, selected_b)
-                    _, outcome_b = sim.score_pick(game_row_b, selected_b)
                     used_b.add(selected_b)
-                    row.update(
-                        {
-                            "B: Suggestion": _matchup_display(rec_b.team, rec_b.opponent, rec_b.is_home),
-                            "B: Pick": selected_b,
-                            "B: Win Prob": cand_b.win_probability,
-                            "B: Spread": cand_b.spread_line,
-                            "B: Score": _actual_score_display(
-                                schedule, current_week, selected_b, cand_b.opponent, cand_b.is_home
-                            ),
-                            "B: Result": outcome_b,
-                            "B: Match/Override": "Match" if selected_b == rec_b.team else "Override",
-                            "B: Model Divergence": cand_b.divergence,
-                            "B: Team Bias": cand_b.team_bias_adjustment,
-                        }
-                    )
+                    entry_b_hedge.save_pick(current_week, selected_b, season)
                     if outcome_b == "LOSS":
                         st.session_state["dual_eliminated_b"] = True
-                else:
-                    row.update({f"B: {c}": "—" for c in ROW_COLUMNS})
 
                 log.append(row)
                 st.session_state["dual_log"] = log
